@@ -1,0 +1,8 @@
+name: commit
+description: Default local diff audit before committing or pushing.
+type: commit
+fragments:
+  - prompts/base.md
+  - prompts/repo-context.md
+  - prompts/validation-policy.md
+  - prompts/output-format.md

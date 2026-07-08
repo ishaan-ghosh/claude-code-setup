@@ -1,0 +1,15 @@
+{
+  "name": "claude-code-setup",
+  "owner": {
+    "name": "Ishaan Ghosh",
+    "email": "ishaanghosh01@gmail.com"
+  },
+  "description": "Ishaan's shared Claude Code setup: engineering skills, audit flow, and a read-policy hook.",
+  "plugins": [
+    {
+      "name": "dev-setup",
+      "source": "./",
+      "description": "Engineering skills (tdd, diagnose, grill-with-docs, improve-codebase-architecture, to-prd), a human-in-the-loop audit-flow skill with the /audit command and a read-only reviewer agent, and a search-first read-policy hook."
+    }
+  ]
+}

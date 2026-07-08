@@ -1,0 +1,16 @@
+# Claude Code local/generated state
+.claude/local/
+auth.json
+.credentials.json
+sessions/
+
+# Dependencies/build/cache
+node_modules/
+dist/
+.cache/
+*.log
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/

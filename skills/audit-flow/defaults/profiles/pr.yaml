@@ -1,0 +1,9 @@
+name: pr
+description: Default pull request audit.
+type: pr
+fragments:
+  - prompts/base.md
+  - prompts/repo-context.md
+  - prompts/pr-github-worktree.md
+  - prompts/validation-policy.md
+  - prompts/output-format.md
