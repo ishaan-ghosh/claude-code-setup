@@ -25,19 +25,40 @@ The `dev-setup` plugin bundles:
 
 The engineering skills are vendored and adapted from [`mattpocock/skills`](https://github.com/mattpocock/skills); see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
+## Audit workspace layout
+
+For repository-specific audit configuration, use the harness-neutral tracked root:
+
+```text
+.audit/
+  profiles/
+  prompts/
+  local/       # private artifacts and machine-local overrides; keep ignored
+```
+
+`audit-flow` prefers `.audit/`, then supports `.claude/audit/` as a legacy fallback. Profile selection is direct `--profile`, explicit `--audit-config-root`, neutral repo profile, legacy repo profile, then the bundled default. Artifact selection is `--artifact-root`, profile `artifact_root`, then neutral `.audit/local/audits` when the repository has `.audit/`, otherwise legacy `.claude/local/audits`. The neutral `.audit/local/audit.overrides.yaml` similarly wins over the legacy override. `audit.yml` records each selected source. After environment expansion, repository-discovered and bundled profile fragments must remain inside their config root; direct profiles and explicit config roots are the caller's opt-in to external fragments. Reserved YAML mapping keys that can alter object lookup semantics are rejected recursively.
+
+The helper requires the complete repository-local audit directory itself to be ignored; `--allow-unignored-artifacts` is rejected because generated reports would change the immutable target. It also checks every planned standard artifact plus unpredictable verification candidates before creating the directory, then revalidates the target after startup writes. It rejects symbolic-link path components, invalid multi-component audit IDs, and existing audit-ID directories rather than following, escaping, or overwriting them. Every selected Git repository is bound to a `git-worktree-v2` snapshot: resolved refs/OIDs, staged and unstaged diff digests, an ordered stage-0 index plus raw tracked-worktree manifest, and an ordered raw manifest for nonignored untracked files. Raw file bytes, executable modes, and symlink link text are re-read directly, so filters and index cache flags cannot hide drift. Parent symlinks, unmerged entries, unsupported filesystem kinds, and tracked submodules fail closed; select submodules as separate profile repositories. PR/stack audits require explicit base/head refs that resolve to different commits.
+
+The audit procedure requires two separate reviewer runs to inspect the target evidence for each terminal finding. The peer first performs a raw-target review from a fixed generated prompt that omits repository-controlled profile fragments and does not disclose the primary artifact or its path; any later comparison is a separate critique run. Primary-only, peer-only, or disputed findings need a focused verifier recorded in `verification-*.md`. A separate adversarial `final-diff` review of the whole frozen target is also required before finalization; it does not substitute for finding verification.
+
+Generated prompts and recorded reports carry SHA-256 digests. Every completed run requires nonempty tool/model/session identity, unique dispatch and session IDs, and an orchestrator-attested structural binding to the target, prompt, and report. Reserved YAML keys cannot be used as reviewer keys. Primary, peer, and final-diff run in timestamp order; supplemental reviewers cannot predate peer completion. Fixed and supplemental runs cannot substitute dispatched prompt or report paths, and fixed reports cannot be byte-identical. Terminal findings use concrete reviewer keys and exact report artifacts; all documented statuses, including `deferred`, require at least two cited runs. `audit.yml` updates are serialized and atomically renamed.
+
+This provenance is local caller/orchestrator-attested bookkeeping, not a cryptographic or authenticated execution receipt. It does not prove report authorship, reviewer independence or blindness, direct inspection, or internal model reasoning. The structural checks and copied-report defense help catch workflow mistakes; the orchestrator and human remain the trust boundary.
+
 ## Install
 
 Add the marketplace and install the plugin:
 
 ```text
-/plugin marketplace add ishaan-ghosh/claude-code-setup
+/plugin marketplace add ishaan-ghosh/claude-code-setup@v0.1.1
 /plugin install dev-setup@claude-code-setup
 ```
 
 Or from the CLI:
 
 ```bash
-claude plugin marketplace add ishaan-ghosh/claude-code-setup
+claude plugin marketplace add ishaan-ghosh/claude-code-setup@v0.1.1
 claude plugin install dev-setup@claude-code-setup
 ```
 
@@ -55,7 +76,7 @@ It registers the marketplace and enables the plugin declaratively:
 ```json
 {
   "extraKnownMarketplaces": {
-    "claude-code-setup": { "source": { "source": "github", "repo": "ishaan-ghosh/claude-code-setup" } }
+    "claude-code-setup": { "source": { "source": "github", "repo": "ishaan-ghosh/claude-code-setup", "ref": "v0.1.1" } }
   },
   "enabledPlugins": { "dev-setup@claude-code-setup": true }
 }
@@ -84,14 +105,20 @@ Per-turn state is stored under `$CLAUDE_PLUGIN_DATA` (or the system temp dir), k
 
 ## Update
 
-After pushing changes, bump `version` in `.claude-plugin/plugin.json`, then:
+After pushing changes, bump `version` in `.claude-plugin/plugin.json` and create
+the matching reviewed tag. Then deliberately replace the pinned marketplace
+registration and update the installed plugin:
 
 ```bash
-claude plugin marketplace update claude-code-setup
-claude plugin update dev-setup@claude-code-setup
+claude plugin marketplace remove claude-code-setup
+claude plugin marketplace add ishaan-ghosh/claude-code-setup@vNEW
+claude plugin install dev-setup@claude-code-setup
 ```
 
-(The plugin pins an explicit `version`, so updates land when the version is bumped. Omit `version` from `plugin.json` if you'd rather track every commit.)
+The remove step also removes plugins installed from that marketplace, so
+approve it deliberately. Also update the `ref` in your settings. The plugin
+pins an explicit `version`, so a marketplace that remains registered at an
+older ref cannot discover the new release.
 
 ## Test
 
@@ -106,7 +133,8 @@ Do not commit:
 
 - `~/.claude/.credentials.json` or any auth tokens
 - sessions or transcripts
-- `.claude/local/` audit artifacts (gitignored)
+- `.audit/local/` audit artifacts (gitignored)
+- legacy `.claude/local/` audit artifacts (gitignored)
 - literal API keys in `settings.json`
 
 Use `/login`, environment variables, or a secret manager instead.
