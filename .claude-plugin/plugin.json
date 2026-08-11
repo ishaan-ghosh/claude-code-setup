@@ -1,7 +1,7 @@
 {
   "name": "dev-setup",
   "displayName": "Claude Code Dev Setup",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Shared Claude Code setup: engineering skills, a human-in-the-loop audit flow, and a search-first read-policy hook.",
   "author": {
     "name": "Ishaan Ghosh",
