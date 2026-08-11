@@ -38,6 +38,9 @@ const FINDING_STATUSES = new Set([
 	"verified",
 	"commented",
 ]);
+const FINDING_SEVERITIES = new Set(["critical", "high", "medium", "low"]);
+const FINDING_CONFIDENCES = new Set(["confirmed", "likely", "speculative", "question"]);
+const FINDING_RECOMMENDED_ACTIONS = new Set(["fix", "comment", "defer", "ignore", "investigate"]);
 const UNRESOLVED_FINDING_STATUSES = new Set([
 	"candidate",
 	"unverified",
@@ -73,6 +76,7 @@ export async function finalizeAudit(options) {
 		validateFindingGate(parsedFindings, status, audit.reviewers);
 
 		const now = options.now ?? new Date();
+		assertFinalizationAfterAuditEvents(audit, now);
 		const timestamp = now.toISOString();
 		audit.status = status;
 		audit.updated_at = timestamp;
@@ -104,6 +108,7 @@ async function validateReviewerRuns(audit, auditDir) {
 	}
 	assertRequiredStageOrder(reviewers);
 	assertSupplementalStageOrder(reviewers);
+	assertReviewerStagesAfterCreation(audit);
 	assertDistinctRequiredReports(reviewers);
 	for (const [key, reviewer] of Object.entries(reviewers)) {
 		if (!REQUIRED_STAGES.includes(key) && (reviewer?.role !== "finding-verifier" || !reviewer.completed_at || !reviewer.dispatch_id)) {
@@ -139,6 +144,41 @@ async function validateReviewerRuns(audit, auditDir) {
 			throw new Error(`Cannot finalize: ${key} report SHA-256 does not match audit metadata.`);
 		}
 		validateStructuralAttestation(audit, key, reviewer, promptSha256);
+	}
+}
+
+function assertReviewerStagesAfterCreation(audit) {
+	const creationTime = Date.parse(audit.created_at);
+	if (!Number.isFinite(creationTime)) {
+		throw new Error("Audit created_at must be a valid timestamp.");
+	}
+	for (const [key, reviewer] of Object.entries(audit.reviewers ?? {})) {
+		if (!reviewer?.completed_at) continue;
+		const completionTime = Date.parse(reviewer.completed_at);
+		if (completionTime < creationTime) {
+			throw new Error(`Reviewer ${key} completion timestamp must not precede audit creation.`);
+		}
+	}
+}
+
+function assertFinalizationAfterAuditEvents(audit, now) {
+	const finalizationTime = now.getTime();
+	if (!Number.isFinite(finalizationTime)) {
+		throw new Error("Finalization timestamp must be a valid date.");
+	}
+	const creationTime = Date.parse(audit.created_at);
+	if (!Number.isFinite(creationTime)) {
+		throw new Error("Audit created_at must be a valid timestamp.");
+	}
+	if (finalizationTime < creationTime) {
+		throw new Error("Finalization timestamp must not precede audit creation.");
+	}
+	for (const [key, reviewer] of Object.entries(audit.reviewers ?? {})) {
+		if (!reviewer?.completed_at) continue;
+		const completionTime = Date.parse(reviewer.completed_at);
+		if (finalizationTime < completionTime) {
+			throw new Error(`Finalization timestamp must not precede completed reviewer ${key}.`);
+		}
 	}
 }
 
@@ -225,7 +265,8 @@ function validateFindingGate(findings, requestedStatus, reviewers) {
 		if (!finding || typeof finding !== "object") {
 			throw new Error(`findings[${index}] must be an object.`);
 		}
-		const findingId = finding.id ?? index;
+		validateFindingContent(finding, index);
+		const findingId = finding.id;
 		if (!FINDING_STATUSES.has(finding.status)) {
 			throw new Error(`Finding ${findingId} has invalid or missing status: ${finding.status ?? "missing"}.`);
 		}
@@ -240,6 +281,23 @@ function validateFindingGate(findings, requestedStatus, reviewers) {
 	}
 	if (requestedStatus === "passed_with_deferred" && deferredCount === 0) {
 		throw new Error("Final status passed_with_deferred requires at least one deferred finding.");
+	}
+}
+
+function validateFindingContent(finding, index) {
+	for (const field of ["id", "title", "impact", "evidence"]) {
+		if (typeof finding[field] !== "string" || finding[field].trim() === "") {
+			throw new Error(`findings[${index}].${field} must be a nonempty string.`);
+		}
+	}
+	if (!FINDING_SEVERITIES.has(finding.severity)) {
+		throw new Error(`Finding ${finding.id} has invalid or missing severity: ${finding.severity ?? "missing"}.`);
+	}
+	if (!FINDING_CONFIDENCES.has(finding.confidence)) {
+		throw new Error(`Finding ${finding.id} has invalid or missing confidence: ${finding.confidence ?? "missing"}.`);
+	}
+	if (!FINDING_RECOMMENDED_ACTIONS.has(finding.recommended_action)) {
+		throw new Error(`Finding ${finding.id} has invalid or missing recommended_action: ${finding.recommended_action ?? "missing"}.`);
 	}
 }
 

@@ -167,7 +167,7 @@ export async function recordAuditStage(options) {
 		}
 
 		const now = options.now ?? new Date();
-		assertCompletionTimeAfterPrerequisites(audit.reviewers, stage, now);
+		assertCompletionTimeAfterPrerequisites(audit, stage, now);
 		const recordedAt = now.toISOString();
 		reviewer.role = config.role;
 		reviewer.dispatch_id = dispatchId;
@@ -201,7 +201,15 @@ export async function recordAuditStage(options) {
 	});
 }
 
-function assertCompletionTimeAfterPrerequisites(reviewers, stage, now) {
+function assertCompletionTimeAfterPrerequisites(audit, stage, now) {
+	const creationTime = Date.parse(audit.created_at);
+	if (!Number.isFinite(creationTime)) {
+		throw new Error("Audit created_at must be a valid timestamp before recording reviewer completion.");
+	}
+	if (now.getTime() < creationTime) {
+		throw new Error(`${stage} completion time must not precede audit creation.`);
+	}
+	const reviewers = audit.reviewers ?? {};
 	const prerequisiteKeys = stage === "primary" ? [] : ["primary", "peer"];
 	if (stage === "peer") prerequisiteKeys.pop();
 	for (const key of prerequisiteKeys) {

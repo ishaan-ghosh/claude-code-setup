@@ -85,6 +85,22 @@ async function recordRequiredStages(result, prefix = "Report") {
 	}
 }
 
+function terminalFinding(overrides = {}) {
+	return {
+		id: "F-001",
+		title: "Test finding",
+		severity: "medium",
+		confidence: "confirmed",
+		status: "fixed",
+		impact: "The test impact is concrete.",
+		evidence: "The test fixture supplies concrete evidence.",
+		recommended_action: "fix",
+		source: ["primary", "peer"],
+		verification: { required: 2, artifacts: ["primary-initial.md", "peer-review.md"] },
+		...overrides,
+	};
+}
+
 function promptSnapshotRecords(prompt) {
 	return prompt
 		.split("\n")
@@ -1440,15 +1456,21 @@ test("refuses altered prompts and serializes concurrent reviewer metadata update
 
 test("strict finalization validates snapshots, stages, and artifact digests", async () => {
 	const projectRoot = await createGitProject("audit-flow-finalize-");
-	const result = await startAudit({ projectRoot, profile: "diff", auditId: "finalize-audit", env: {} });
+	const result = await startAudit({
+		projectRoot,
+		profile: "diff",
+		auditId: "finalize-audit",
+		now: new Date("2026-05-07T00:00:00.000Z"),
+		env: {},
+	});
 	const reports = [
-		["primary", result.primaryInitialPath, "# Primary\n"],
-		["peer", result.peerReviewPath, "# Peer\n"],
-		["final-diff", result.finalDiffReviewPath, "# Final diff\n"],
+		["primary", result.primaryInitialPath, "# Primary\n", "2026-05-07T01:00:00.000Z"],
+		["peer", result.peerReviewPath, "# Peer\n", "2026-05-07T02:00:00.000Z"],
+		["final-diff", result.finalDiffReviewPath, "# Final diff\n", "2026-05-07T03:00:00.000Z"],
 	];
-	for (const [stage, artifact, contents] of reports) {
+	for (const [stage, artifact, contents, completedAt] of reports) {
 		await writeText(artifact, contents);
-		await recordAuditStage({ auditYmlPath: result.auditYmlPath, stage });
+		await recordAuditStage({ auditYmlPath: result.auditYmlPath, stage, now: new Date(completedAt) });
 	}
 	await writeText(result.findingsPath, "[]\n");
 	await writeText(result.receiptPath, "# Receipt\n\nNo confirmed findings.\n");
@@ -1484,6 +1506,70 @@ test("strict finalization validates snapshots, stages, and artifact digests", as
 		() => recordAuditStage({ auditYmlPath: result.auditYmlPath, stage: "primary" }),
 		/finalized or not in progress/,
 	);
+});
+
+test("reviewer completion and finalization stay within audit lifecycle boundaries", async () => {
+	const projectRoot = await createGitProject("audit-flow-lifecycle-time-");
+	const result = await startAudit({
+		projectRoot,
+		profile: "diff",
+		auditId: "lifecycle-time",
+		now: new Date("2026-05-07T12:00:00.000Z"),
+		env: {},
+	});
+	await writeText(result.primaryInitialPath, "# Primary\n");
+	let before = await readFile(result.auditYmlPath);
+	await assert.rejects(
+		() => recordAuditStage({
+			auditYmlPath: result.auditYmlPath,
+			stage: "primary",
+			now: new Date("2026-05-07T11:59:59.999Z"),
+		}),
+		/completion time must not precede audit creation/,
+	);
+	assert.deepEqual(await readFile(result.auditYmlPath), before);
+
+	for (const [stage, artifact, completedAt] of [
+		["primary", result.primaryInitialPath, "2026-05-07T13:00:00.000Z"],
+		["peer", result.peerReviewPath, "2026-05-07T14:00:00.000Z"],
+		["final-diff", result.finalDiffReviewPath, "2026-05-07T15:00:00.000Z"],
+	]) {
+		await writeText(artifact, `# ${stage}\n`);
+		await recordAuditStage({ auditYmlPath: result.auditYmlPath, stage, now: new Date(completedAt) });
+	}
+	await writeText(result.findingsPath, "[]\n");
+	await writeText(result.receiptPath, "# Receipt\n");
+
+	const baseline = parseYamlSubset(await readFile(result.auditYmlPath, "utf8"));
+	const beforeCreation = structuredClone(baseline);
+	beforeCreation.reviewers.primary.completed_at = "2026-05-07T11:00:00.000Z";
+	beforeCreation.reviewers.primary.attestation.recorded_at = "2026-05-07T11:00:00.000Z";
+	await writeText(result.auditYmlPath, toYaml(beforeCreation));
+	await assert.rejects(
+		() => finalizeAudit({
+			auditYmlPath: result.auditYmlPath,
+			status: "passed",
+			now: new Date("2026-05-07T16:00:00.000Z"),
+		}),
+		/Reviewer primary completion timestamp must not precede audit creation/,
+	);
+
+	await writeText(result.auditYmlPath, toYaml(baseline));
+	before = await readFile(result.auditYmlPath);
+	await assert.rejects(
+		() => finalizeAudit({
+			auditYmlPath: result.auditYmlPath,
+			status: "passed",
+			now: new Date("2026-05-07T14:59:59.999Z"),
+		}),
+		/Finalization timestamp must not precede completed reviewer final_diff/,
+	);
+	assert.deepEqual(await readFile(result.auditYmlPath), before);
+	await finalizeAudit({
+		auditYmlPath: result.auditYmlPath,
+		status: "passed",
+		now: new Date("2026-05-07T16:00:00.000Z"),
+	});
 });
 
 test("fixed stages reject alternate artifacts and duplicate nonempty session IDs", async () => {
@@ -1665,12 +1751,11 @@ test("finding provenance rejects byte-identical cited reports", async () => {
 		reviewerKey: "copy-verifier",
 		artifactPath: "verification-copy.md",
 	});
-	await writeText(result.findingsPath, JSON.stringify({ findings: [{
+	await writeText(result.findingsPath, JSON.stringify({ findings: [terminalFinding({
 		id: "F-COPY",
-		status: "fixed",
 		source: ["primary", "copy-verifier"],
 		verification: { required: 2, artifacts: ["primary-initial.md", "verification-copy.md"] },
-	}] }));
+	})] }));
 	await writeText(result.receiptPath, "# Receipt\n");
 	await assert.rejects(
 		() => finalizeAudit({ auditYmlPath: result.auditYmlPath, status: "passed" }),
@@ -1696,51 +1781,58 @@ test("finalization enforces finding shape, reviewer gate, and status policy", as
 		() => finalizeAudit({ auditYmlPath: result.auditYmlPath, status: "passed" }),
 		/array or an object with a findings array/,
 	);
-	await writeText(result.findingsPath, JSON.stringify({ findings: [{
+	for (const [field, value, expected] of [
+		["id", "", /findings\[0\]\.id must be a nonempty string/],
+		["title", "", /findings\[0\]\.title must be a nonempty string/],
+		["severity", "urgent", /invalid or missing severity: urgent/],
+		["confidence", "certain", /invalid or missing confidence: certain/],
+		["impact", "", /findings\[0\]\.impact must be a nonempty string/],
+		["evidence", "", /findings\[0\]\.evidence must be a nonempty string/],
+		["recommended_action", "ship", /invalid or missing recommended_action: ship/],
+	]) {
+		await writeText(result.findingsPath, JSON.stringify({ findings: [terminalFinding({ [field]: value })] }));
+		await assert.rejects(
+			() => finalizeAudit({ auditYmlPath: result.auditYmlPath, status: "passed" }),
+			expected,
+		);
+	}
+	await writeText(result.findingsPath, JSON.stringify({ findings: [terminalFinding({
 		id: "F-MISSING-STATUS",
-		source: ["primary", "peer"],
-		verification: { required: 2, artifacts: ["primary-initial.md", "peer-review.md"] },
-	}] }));
+		status: undefined,
+	})] }));
 	await assert.rejects(
 		() => finalizeAudit({ auditYmlPath: result.auditYmlPath, status: "blocked" }),
 		/invalid or missing status: missing/,
 	);
-	await writeText(result.findingsPath, JSON.stringify({ findings: [{
+	await writeText(result.findingsPath, JSON.stringify({ findings: [terminalFinding({
 		id: "F-UNKNOWN-STATUS",
 		status: "invented",
-		source: ["primary", "peer"],
-		verification: { required: 2, artifacts: ["primary-initial.md", "peer-review.md"] },
-	}] }));
+	})] }));
 	await assert.rejects(
 		() => finalizeAudit({ auditYmlPath: result.auditYmlPath, status: "blocked" }),
 		/invalid or missing status: invented/,
 	);
-	await writeText(result.findingsPath, JSON.stringify({ findings: [{
+	await writeText(result.findingsPath, JSON.stringify({ findings: [terminalFinding({
 		id: "F-GENERIC-ROLES",
-		status: "fixed",
 		source: ["primary-reviewer", "peer-reviewer"],
-		verification: { required: 2, artifacts: ["primary-initial.md", "peer-review.md"] },
-	}] }));
+	})] }));
 	await assert.rejects(
 		() => finalizeAudit({ auditYmlPath: result.auditYmlPath, status: "passed" }),
 		/cites reviewer key without a completed recorded report: primary-reviewer/,
 	);
-	await writeText(result.findingsPath, JSON.stringify({ findings: [{
+	await writeText(result.findingsPath, JSON.stringify({ findings: [terminalFinding({
 		id: "F-MISSING-ARTIFACT-BINDING",
-		status: "fixed",
-		source: ["primary", "peer"],
 		verification: { required: 2, artifacts: ["primary-initial.md"] },
-	}] }));
+	})] }));
 	await assert.rejects(
 		() => finalizeAudit({ auditYmlPath: result.auditYmlPath, status: "passed" }),
 		/does not include the report recorded for reviewer key peer/,
 	);
-	await writeText(result.findingsPath, JSON.stringify({ findings: [{
+	await writeText(result.findingsPath, JSON.stringify({ findings: [terminalFinding({
 		id: "F-001",
-		status: "fixed",
 		source: ["primary"],
 		verification: { required: 2, artifacts: ["primary-initial.md"] },
-	}] }));
+	})] }));
 	await assert.rejects(
 		() => finalizeAudit({ auditYmlPath: result.auditYmlPath, status: "passed_with_deferred" }),
 		/has not passed its 2-reviewer finding verification gate/,
@@ -1749,50 +1841,41 @@ test("finalization enforces finding shape, reviewer gate, and status policy", as
 		() => finalizeAudit({ auditYmlPath: result.auditYmlPath, status: "blocked" }),
 		/has not passed its 2-reviewer finding verification gate/,
 	);
-	await writeText(result.findingsPath, JSON.stringify({ findings: [{
+	await writeText(result.findingsPath, JSON.stringify({ findings: [terminalFinding({
 		id: "F-002",
-		status: "fixed",
 		source: ["primary", "missing-reviewer"],
 		verification: { required: 2, artifacts: ["primary-initial.md", "missing.md"] },
-	}] }));
+	})] }));
 	await assert.rejects(
 		() => finalizeAudit({ auditYmlPath: result.auditYmlPath, status: "passed" }),
 		/cites reviewer key without a completed recorded report/,
 	);
-	await writeText(result.findingsPath, JSON.stringify({ findings: [{
+	await writeText(result.findingsPath, JSON.stringify({ findings: [terminalFinding({
 		id: "F-003",
 		status: "accepted",
-		source: ["primary", "peer"],
-		verification: { required: 2, artifacts: ["primary-initial.md", "peer-review.md"] },
-	}] }));
+	})] }));
 	await assert.rejects(
 		() => finalizeAudit({ auditYmlPath: result.auditYmlPath, status: "passed_with_deferred" }),
 		/is unresolved \(accepted\); final status must be blocked/,
 	);
-	await writeText(result.findingsPath, JSON.stringify({ findings: [{
+	await writeText(result.findingsPath, JSON.stringify({ findings: [terminalFinding({
 		id: "F-NO-DEFERRED",
-		status: "fixed",
-		source: ["primary", "peer"],
-		verification: { required: 2, artifacts: ["primary-initial.md", "peer-review.md"] },
-	}] }));
+	})] }));
 	await assert.rejects(
 		() => finalizeAudit({ auditYmlPath: result.auditYmlPath, status: "passed_with_deferred" }),
 		/requires at least one deferred finding/,
 	);
 
 	await writeText(result.findingsPath, JSON.stringify({ findings: [
-		{
+		terminalFinding({
 			id: "F-004",
-			status: "fixed",
-			source: ["primary", "peer"],
-			verification: { required: 2, artifacts: ["primary-initial.md", "peer-review.md"] },
-		},
-		{
+		}),
+		terminalFinding({
 			id: "F-005",
 			status: "deferred",
 			source: ["primary"],
 			verification: { required: 2, artifacts: ["primary-initial.md"] },
-		},
+		}),
 	] }));
 	await assert.rejects(
 		() => finalizeAudit({ auditYmlPath: result.auditYmlPath, status: "passed_with_deferred" }),
@@ -1803,18 +1886,13 @@ test("finalization enforces finding shape, reviewer gate, and status policy", as
 		/has not passed its 2-reviewer finding verification gate/,
 	);
 	await writeText(result.findingsPath, JSON.stringify({ findings: [
-		{
+		terminalFinding({
 			id: "F-004",
-			status: "fixed",
-			source: ["primary", "peer"],
-			verification: { required: 2, artifacts: ["primary-initial.md", "peer-review.md"] },
-		},
-		{
+		}),
+		terminalFinding({
 			id: "F-005",
 			status: "deferred",
-			source: ["primary", "peer"],
-			verification: { required: 2, artifacts: ["primary-initial.md", "peer-review.md"] },
-		},
+		}),
 	] }));
 	await assert.rejects(
 		() => finalizeAudit({ auditYmlPath: result.auditYmlPath, status: "passed" }),
