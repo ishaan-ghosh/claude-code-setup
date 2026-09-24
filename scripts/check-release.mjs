@@ -136,6 +136,15 @@ export async function checkRelease(root = repoRoot, { tag } = {}) {
     }
   }
 
+  // Plugin agents are registered as <plugin>:<name>; a bare name does not resolve and fails the model policy.
+  const agentNames = (await listFiles(path.join(root, "agents"), (name) => name.endsWith(".md"))).map((file) => path.basename(file, ".md"));
+  for (const file of documents.filter((candidate) => candidate.endsWith(".md"))) {
+    const text = await fs.readFile(file, "utf8").catch(() => "");
+    for (const match of text.matchAll(/subagent_type[`"'\s:=]*(?:set to\s*)?[`"']?([A-Za-z0-9_:-]+)/g)) {
+      if (agentNames.includes(match[1])) errors.push(`${path.relative(root, file)}: subagent_type ${match[1]} must be ${plugin.name}:${match[1]}`);
+    }
+  }
+
   return { errors, summary: { version, skills, agents, commands } };
 }
 
