@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rmdir, symlink, unlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { realpathSync } from "node:fs";
+import { tmpdir as osTmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -16,6 +17,9 @@ import {
 	sha256,
 	stableJson,
 } from "../scripts/snapshot.mjs";
+
+// macOS temp dirs live under the /var -> /private/var symlink, which start-audit rejects by design.
+const tmpdir = () => realpathSync(osTmpdir());
 
 const execFileAsync = promisify(execFile);
 
