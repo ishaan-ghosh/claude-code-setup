@@ -1,9 +1,11 @@
 import { execFile } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rmdir, symlink, unlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { realpathSync } from "node:fs";
+import { tmpdir as osTmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { parseYamlSubset, startAudit, toYaml } from "../scripts/start-audit.mjs";
@@ -15,6 +17,9 @@ import {
 	sha256,
 	stableJson,
 } from "../scripts/snapshot.mjs";
+
+// macOS temp dirs live under the /var -> /private/var symlink, which start-audit rejects by design.
+const tmpdir = () => realpathSync(osTmpdir());
 
 const execFileAsync = promisify(execFile);
 
@@ -355,6 +360,7 @@ test("prefers neutral config and refuses unignored neutral artifacts inside a gi
 				projectRoot,
 				profile: "commit",
 				auditId: "unsafe-audit",
+				noAutoExclude: true,
 				now: new Date("2026-05-07T00:00:00.000Z"),
 				env: {},
 			}),
@@ -398,7 +404,7 @@ test("rejects an ignore rule that covers only the predictable probe", async () =
 	].join("\n"));
 
 	await assert.rejects(
-		() => startAudit({ projectRoot, profile: "commit", auditId: "probe-only", env: {} }),
+		() => startAudit({ projectRoot, profile: "commit", auditId: "probe-only", noAutoExclude: true, env: {} }),
 		/planned artifact is not ignored.*audit\.yml/,
 	);
 	await assert.rejects(() => readFile(path.join(projectRoot, ".audit/local/audits/probe-only/audit.yml")), { code: "ENOENT" });
@@ -439,7 +445,7 @@ test("requires the audit directory itself to be ignored for future verifier arti
 	].join("\n"));
 
 	await assert.rejects(
-		() => startAudit({ projectRoot, profile: "commit", auditId: "selective-ignore", env: {} }),
+		() => startAudit({ projectRoot, profile: "commit", auditId: "selective-ignore", noAutoExclude: true, env: {} }),
 		/Artifact directory itself must be ignored/,
 	);
 	await assert.rejects(() => readFile(path.join(projectRoot, auditPrefix, "audit.yml")), { code: "ENOENT" });
@@ -512,8 +518,8 @@ test("falls back to built-in profiles when a repo has no local audit profile", a
 	assert.match(auditYml, /source: "default"/);
 	assert.match(auditYml, /type: "commit"/);
 	assert.match(auditYml, /raw: "diff"/);
-	assert.equal(result.auditDir, path.join(projectRoot, ".claude/local/audits/default-profile-audit"));
-	assert.equal(result.artifactRootSource, "legacy-fallback");
+	assert.equal(result.auditDir, path.join(projectRoot, ".audit/local/audits/default-profile-audit"));
+	assert.equal(result.artifactRootSource, "neutral-bare-default");
 
 	const primaryPrompt = await readFile(result.primaryPromptPath, "utf8");
 	assert.match(primaryPrompt, /# Audit base/);
@@ -1901,4 +1907,277 @@ test("finalization enforces finding shape, reviewer gate, and status policy", as
 	await finalizeAudit({ auditYmlPath: result.auditYmlPath, status: "passed_with_deferred" });
 	const finalized = parseYamlSubset(await readFile(result.auditYmlPath, "utf8"));
 	assert.equal(finalized.status, "passed_with_deferred");
+});
+
+async function createBareGitProject(prefix = "audit-flow-bare-") {
+	const projectRoot = await mkdtemp(path.join(tmpdir(), prefix));
+	await initGitRepo(projectRoot, { ignoredArtifacts: false });
+	return projectRoot;
+}
+
+async function gitExcludePath(cwd) {
+	const { stdout } = await execFileAsync("git", ["rev-parse", "--git-path", "info/exclude"], { cwd });
+	return path.resolve(cwd, stdout.trim());
+}
+
+async function readOptional(filePath) {
+	try {
+		return await readFile(filePath, "utf8");
+	} catch (error) {
+		if (error?.code === "ENOENT") return null;
+		throw error;
+	}
+}
+
+function countLines(text, line) {
+	return (text ?? "").split("\n").filter((candidate) => candidate === line).length;
+}
+
+const START_AUDIT_SCRIPT = fileURLToPath(new URL("../scripts/start-audit.mjs", import.meta.url));
+
+test("bare repositories default to the neutral root and auto-exclude it before the snapshot", async () => {
+	const projectRoot = await createBareGitProject();
+	const excludePath = await gitExcludePath(projectRoot);
+	await writeText(excludePath, "custom-rule");
+	await writeText(path.join(projectRoot, "untracked-notes.txt"), "not an audit artifact\n");
+
+	const result = await startAudit({
+		projectRoot,
+		profile: "diff",
+		auditId: "bare-audit",
+		now: new Date("2026-05-07T00:00:00.000Z"),
+		env: {},
+	});
+
+	assert.equal(result.auditDir, path.join(projectRoot, ".audit/local/audits/bare-audit"));
+	assert.equal(result.artifactRootSource, "neutral-bare-default");
+	assert.deepEqual(result.artifactExclude, { status: "added", modified: true, path: excludePath, pattern: "/.audit/local/" });
+	assert.equal(
+		await readFile(excludePath, "utf8"),
+		"custom-rule\n# audit-flow: local audit artifacts (added by start-audit.mjs; see --no-auto-exclude)\n/.audit/local/\n",
+	);
+	const metadata = parseYamlSubset(await readFile(result.auditYmlPath, "utf8"));
+	assert.equal(metadata.artifacts.root_source, "neutral-bare-default");
+	assert.deepEqual(metadata.artifact_exclude, { status: "added", modified: true, path: excludePath, pattern: "/.audit/local/" });
+	assert.deepEqual(metadata.target.repos[0].untracked.map((entry) => entry.path), ["untracked-notes.txt"]);
+	const { stdout: status } = await execFileAsync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: projectRoot });
+	assert.doesNotMatch(status, /\.audit/);
+
+	for (const [stage, artifact, contents, completedAt] of [
+		["primary", result.primaryInitialPath, "# Primary\n", "2026-05-07T01:00:00.000Z"],
+		["peer", result.peerReviewPath, "# Peer\n", "2026-05-07T02:00:00.000Z"],
+		["final-diff", result.finalDiffReviewPath, "# Final diff\n", "2026-05-07T03:00:00.000Z"],
+	]) {
+		await writeText(artifact, contents);
+		await recordAuditStage({ auditYmlPath: result.auditYmlPath, stage, now: new Date(completedAt) });
+	}
+	await writeText(result.findingsPath, "[]\n");
+	await writeText(result.receiptPath, "# Receipt\n\nNo confirmed findings.\n");
+	await writeText(path.join(projectRoot, "untracked-notes.txt"), "drifted\n");
+	await assert.rejects(
+		() => finalizeAudit({ auditYmlPath: result.auditYmlPath, status: "passed" }),
+		/Audit target snapshot changed/,
+	);
+	await writeText(path.join(projectRoot, "untracked-notes.txt"), "not an audit artifact\n");
+	await finalizeAudit({ auditYmlPath: result.auditYmlPath, status: "passed", now: new Date("2026-05-07T04:00:00.000Z") });
+	assert.equal(parseYamlSubset(await readFile(result.auditYmlPath, "utf8")).status, "passed");
+});
+
+test("auto-exclude is idempotent and never duplicates the exclude rule", async () => {
+	const projectRoot = await createBareGitProject("audit-flow-bare-repeat-");
+	const excludePath = await gitExcludePath(projectRoot);
+	const first = await startAudit({ projectRoot, profile: "diff", auditId: "first", env: {} });
+	assert.equal(first.artifactExclude.status, "added");
+	const afterFirst = await readFile(excludePath, "utf8");
+	assert.equal(countLines(afterFirst, "/.audit/local/"), 1);
+
+	const second = await startAudit({ projectRoot, profile: "diff", auditId: "second", env: {} });
+	assert.deepEqual(second.artifactExclude, { status: "already-ignored", modified: false, path: null, pattern: null });
+	assert.equal(await readFile(excludePath, "utf8"), afterFirst);
+
+	// A higher-precedence negation keeps the directory unignored: the rule is not re-appended and the
+	// existing fail-closed ignore checks still reject the start.
+	await writeText(path.join(projectRoot, ".gitignore"), "!/.audit/local/\n");
+	await assert.rejects(
+		() => startAudit({ projectRoot, profile: "diff", auditId: "negated", env: {} }),
+		/Artifact path is inside a git repository but is not ignored/,
+	);
+	assert.equal(await readFile(excludePath, "utf8"), afterFirst);
+	assert.equal(await readOptional(path.join(projectRoot, ".audit/local/audits/negated/audit.yml")), null);
+});
+
+test("--no-auto-exclude restores the fail-with-instructions behavior", async () => {
+	const projectRoot = await createBareGitProject("audit-flow-no-auto-exclude-");
+	const excludePath = await gitExcludePath(projectRoot);
+	const before = await readOptional(excludePath);
+	await assert.rejects(
+		() => startAudit({ projectRoot, profile: "diff", auditId: "no-auto", noAutoExclude: true, env: {} }),
+		/Artifact path is inside a git repository but is not ignored.*Add \.audit\/local\/ \(preferred\)/,
+	);
+	assert.equal(await readOptional(excludePath), before);
+	assert.equal(await readOptional(path.join(projectRoot, ".audit/local/audits/no-auto/audit.yml")), null);
+
+	await assert.rejects(
+		() => execFileAsync(process.execPath, [START_AUDIT_SCRIPT, "diff", "--project-root", projectRoot, "--audit-id", "cli-no-auto", "--no-auto-exclude"]),
+		(error) => {
+			assert.equal(error.code, 1);
+			assert.match(error.stderr, /Artifact path is inside a git repository but is not ignored/);
+			return true;
+		},
+	);
+	assert.equal(await readOptional(excludePath), before);
+
+	const { stdout } = await execFileAsync(process.execPath, [START_AUDIT_SCRIPT, "diff", "--project-root", projectRoot, "--audit-id", "cli-auto"]);
+	assert.equal(JSON.parse(stdout).artifactExclude.status, "added");
+	const help = await execFileAsync(process.execPath, [START_AUDIT_SCRIPT, "--help"]);
+	assert.match(help.stdout, /--no-auto-exclude/);
+});
+
+test("explicit CLI and profile artifact roots are never auto-excluded", async () => {
+	const projectRoot = await createBareGitProject("audit-flow-explicit-no-exclude-");
+	const excludePath = await gitExcludePath(projectRoot);
+	const before = await readOptional(excludePath);
+	await assert.rejects(
+		() => startAudit({ projectRoot, profile: "diff", artifactRoot: "cli-artifacts", auditId: "cli-root", env: {} }),
+		/Artifact path is inside a git repository but is not ignored/,
+	);
+	await writeText(path.join(projectRoot, "custom/profile.yaml"), [
+		"name: custom",
+		"type: commit",
+		"fragments: []",
+		"artifact_root:",
+		"  path: .audit/local/audits",
+		"",
+	].join("\n"));
+	await assert.rejects(
+		() => startAudit({ projectRoot, profile: "custom/profile.yaml", auditId: "profile-root", env: {} }),
+		/Artifact path is inside a git repository but is not ignored/,
+	);
+	assert.equal(await readOptional(excludePath), before);
+
+	const outsideRoot = await mkdtemp(path.join(tmpdir(), "audit-flow-outside-artifacts-"));
+	const outside = await startAudit({ projectRoot, profile: "diff", artifactRoot: outsideRoot, auditId: "outside-root", env: {} });
+	assert.equal(outside.artifactRootSource, "cli");
+	assert.deepEqual(outside.artifactExclude, { status: "not-applicable", modified: false, path: null, pattern: null });
+	assert.equal(await readOptional(excludePath), before);
+});
+
+test("legacy-only repositories keep the legacy fallback without auto-exclude", async () => {
+	const configured = await createBareGitProject("audit-flow-legacy-config-");
+	await writeText(path.join(configured, ".gitignore"), ".claude/local/\n");
+	await writeText(path.join(configured, ".claude/audit/profiles/commit.yaml"), ["name: commit", "type: commit", "fragments: []", ""].join("\n"));
+	const excludePath = await gitExcludePath(configured);
+	const before = await readOptional(excludePath);
+	const legacy = await startAudit({ projectRoot: configured, profile: "commit", auditId: "legacy-config", env: {} });
+	assert.equal(legacy.auditDir, path.join(configured, ".claude/local/audits/legacy-config"));
+	assert.equal(legacy.artifactRootSource, "legacy-fallback");
+	assert.equal(legacy.artifactExclude.status, "not-applicable");
+	assert.equal(await readOptional(excludePath), before);
+
+	const artifactsOnly = await createBareGitProject("audit-flow-legacy-artifacts-");
+	await writeText(path.join(artifactsOnly, ".gitignore"), ".claude/local/\n");
+	await writeText(path.join(artifactsOnly, ".claude/local/audits/older-audit/audit.yml"), "id: older-audit\n");
+	const legacyArtifacts = await startAudit({ projectRoot: artifactsOnly, profile: "diff", auditId: "legacy-artifacts", env: {} });
+	assert.equal(legacyArtifacts.artifactRootSource, "legacy-fallback");
+
+	const unignoredLegacy = await createBareGitProject("audit-flow-legacy-unignored-");
+	await writeText(path.join(unignoredLegacy, ".claude/audit/profiles/commit.yaml"), ["name: commit", "type: commit", "fragments: []", ""].join("\n"));
+	const unignoredExclude = await gitExcludePath(unignoredLegacy);
+	const unignoredBefore = await readOptional(unignoredExclude);
+	await assert.rejects(
+		() => startAudit({ projectRoot: unignoredLegacy, profile: "commit", auditId: "legacy-unignored", env: {} }),
+		/Artifact path is inside a git repository but is not ignored/,
+	);
+	assert.equal(await readOptional(unignoredExclude), unignoredBefore);
+});
+
+test("refuses to auto-edit a symbolic-link exclude file or exclude directory", async () => {
+	const linkedFileProject = await createBareGitProject("audit-flow-exclude-link-");
+	const excludePath = await gitExcludePath(linkedFileProject);
+	const externalExclude = path.join(await mkdtemp(path.join(tmpdir(), "audit-flow-external-exclude-")), "exclude");
+	await writeText(externalExclude, "# external\n");
+	await unlink(excludePath).catch(() => {});
+	await symlink(externalExclude, excludePath);
+	await assert.rejects(
+		() => startAudit({ projectRoot: linkedFileProject, profile: "diff", auditId: "exclude-link", env: {} }),
+		/Refusing to auto-edit the local Git exclude file.*symbolic-link component.*--no-auto-exclude/,
+	);
+	assert.equal(await readFile(externalExclude, "utf8"), "# external\n");
+	assert.equal(await readOptional(path.join(linkedFileProject, ".audit/local/audits/exclude-link/audit.yml")), null);
+
+	const linkedDirProject = await createBareGitProject("audit-flow-exclude-dir-link-");
+	const infoDir = path.dirname(await gitExcludePath(linkedDirProject));
+	const externalInfo = await mkdtemp(path.join(tmpdir(), "audit-flow-external-info-"));
+	await unlink(path.join(infoDir, "exclude")).catch(() => {});
+	await rmdir(infoDir);
+	await symlink(externalInfo, infoDir, "dir");
+	await assert.rejects(
+		() => startAudit({ projectRoot: linkedDirProject, profile: "diff", auditId: "exclude-dir-link", env: {} }),
+		/Refusing to auto-edit the local Git exclude file.*symbolic-link component/,
+	);
+	assert.equal(await readOptional(path.join(externalInfo, "exclude")), null);
+});
+
+test("linked worktrees auto-exclude through git rev-parse --git-path", async () => {
+	const mainRoot = await createBareGitProject("audit-flow-worktree-main-");
+	const linkedRoot = `${mainRoot}-linked`;
+	await execFileAsync("git", ["worktree", "add", "--detach", linkedRoot], { cwd: mainRoot });
+	const expectedExclude = await gitExcludePath(linkedRoot);
+	assert.notEqual(path.dirname(path.dirname(expectedExclude)), path.join(linkedRoot, ".git"));
+
+	const result = await startAudit({ projectRoot: linkedRoot, profile: "diff", auditId: "worktree-audit", env: {} });
+	assert.equal(result.auditDir, path.join(linkedRoot, ".audit/local/audits/worktree-audit"));
+	assert.equal(result.artifactExclude.status, "added");
+	assert.equal(result.artifactExclude.path, expectedExclude);
+	assert.equal(countLines(await readFile(expectedExclude, "utf8"), "/.audit/local/"), 1);
+	await execFileAsync("git", ["check-ignore", "--quiet", "--", ".audit/local/audits/worktree-audit/audit.yml"], { cwd: linkedRoot });
+	await writeText(result.primaryInitialPath, "# Primary\n");
+	await recordAuditStage({ auditYmlPath: result.auditYmlPath, stage: "primary" });
+});
+
+test("auto-exclude edits only the repository that contains the artifact directory", async () => {
+	const platformRoot = await mkdtemp(path.join(tmpdir(), "audit-flow-platform-exclude-"));
+	const backendRoot = path.join(platformRoot, "backend");
+	const frontendRoot = path.join(platformRoot, "frontend");
+	await initGitRepo(backendRoot, { ignoredArtifacts: false });
+	await initGitRepo(frontendRoot, { ignoredArtifacts: false });
+	await writeText(path.join(platformRoot, ".audit/profiles/platform.yaml"), [
+		"name: platform",
+		"type: platform",
+		"fragments: []",
+		"platform:",
+		"  name: ExamplePlatform",
+		"  context_root: .",
+		"repos:",
+		"  - name: backend",
+		"    path: backend",
+		"  - name: frontend",
+		"    path: frontend",
+		"artifact_root:",
+		"  repo: backend",
+		"",
+	].join("\n"));
+	const backendExclude = await gitExcludePath(backendRoot);
+	const frontendExclude = await gitExcludePath(frontendRoot);
+	const frontendBefore = await readOptional(frontendExclude);
+
+	const result = await startAudit({ projectRoot: platformRoot, profile: "platform", auditId: "platform-exclude", env: {} });
+	assert.equal(result.auditDir, path.join(backendRoot, ".audit/local/audits/platform-exclude"));
+	assert.equal(result.artifactRootSource, "neutral-default");
+	assert.equal(result.artifactExclude.path, backendExclude);
+	assert.equal(countLines(await readFile(backendExclude, "utf8"), "/.audit/local/"), 1);
+	assert.equal(await readOptional(frontendExclude), frontendBefore);
+	await writeText(result.primaryInitialPath, "# Primary\n");
+	await recordAuditStage({ auditYmlPath: result.auditYmlPath, stage: "primary" });
+});
+
+test("auto-exclude anchors the rule to a project subdirectory inside the repository", async () => {
+	const repoRoot = await createBareGitProject("audit-flow-subdir-exclude-");
+	const projectRoot = path.join(repoRoot, "pkg [a]");
+	await writeText(path.join(projectRoot, "keep.txt"), "keep\n");
+	const result = await startAudit({ projectRoot, profile: "diff", auditId: "subdir-audit", env: {} });
+	assert.equal(result.artifactExclude.pattern, "/pkg \\[a\\]/.audit/local/");
+	await execFileAsync("git", ["check-ignore", "--quiet", "--", "pkg [a]/.audit/local/audits/subdir-audit/audit.yml"], { cwd: repoRoot });
+	const metadata = parseYamlSubset(await readFile(result.auditYmlPath, "utf8"));
+	assert.deepEqual(metadata.target.repos[0].untracked.map((entry) => entry.path), ["pkg [a]/keep.txt"]);
 });

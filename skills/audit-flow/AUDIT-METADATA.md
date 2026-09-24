@@ -140,6 +140,12 @@ artifacts:
   findings: findings.json
   receipt: receipt.md
 
+artifact_exclude:
+  status: added # added | present | already-ignored | disabled | not-applicable
+  modified: true
+  path: /workspace/RoboCortex/deployment-harness/.git/info/exclude
+  pattern: /.audit/local/
+
 finalization:
   status: passed
   target_snapshot_sha256: 7c0b...f21a
@@ -152,9 +158,11 @@ finalization:
   completed_at: 2026-05-07T13:00:00Z
 ```
 
-Keep this file local/private by default under `.audit/local/audits/<audit-id>/`. Legacy-only repositories may use `.claude/local/audits/<audit-id>/` while migrating.
+Keep this file local/private by default under `.audit/local/audits/<audit-id>/`. Legacy-only repositories may use `.claude/local/audits/<audit-id>/` while migrating; a repository with no audit setup at all uses the neutral root.
 
-The profile `source` is one of `direct`, `explicit-config-root`, `repo-neutral`, `repo-legacy`, or `default`. `local_override_source` is `neutral`, `legacy`, or `null`. Artifact `root_source` records `cli`, `profile`, `neutral-default`, or `legacy-fallback`. These provenance fields make path selection auditable without exposing override contents.
+The profile `source` is one of `direct`, `explicit-config-root`, `repo-neutral`, `repo-legacy`, or `default`. `local_override_source` is `neutral`, `legacy`, or `null`. Artifact `root_source` records `cli`, `profile`, `neutral-default` (repository has `.audit/`), `legacy-fallback` (legacy `.claude/audit/`, `.claude/local/audits/`, or `.claude/local/audit.overrides.yaml` present and no `.audit/`), or `neutral-bare-default` (no audit setup at all). These provenance fields make path selection auditable without exposing override contents.
+
+`artifact_exclude` records whether startup edited a local Git exclude file so the neutral artifact root is ignored. `status` is `added` (the rule was appended; `modified: true`), `present` (the exact rule already existed but a higher-precedence rule such as a `.gitignore` negation still un-ignores the directory; nothing is written and the normal ignore check then fails startup, so this value is not normally persisted), `already-ignored` (the audit directory and planned artifacts were already ignored; nothing was read or written), `disabled` (`--no-auto-exclude`), or `not-applicable` (a `cli`, `profile`, or `legacy-fallback` root, or an artifact directory outside any Git repository). `path` is the absolute exclude file from `git rev-parse --git-path info/exclude` in the repository containing the artifact directory, and `pattern` is the anchored rule; both are `null` unless the file was inspected. The edit happens before git metadata and the `git-worktree-v2` snapshot are captured, so the recorded snapshot already reflects it and later record/finalize revalidation is unaffected. Untracked files outside the excluded `.audit/local/` directory stay in the untracked manifest.
 
 All helper-parsed YAML, including profiles, overrides, and `audit.yml`, rejects the reserved mapping keys `__proto__`, `prototype`, and `constructor` recursively; stage recording rejects the same names as reviewer keys before writing metadata. Startup requires the complete audit directory itself to be ignored, validates every planned standard artifact and unpredictable focused-verification candidates as defense in depth, and revalidates the target after writing the initial metadata and prompts.
 

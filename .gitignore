@@ -1,4 +1,5 @@
-# Claude Code local/generated state
+# Audit and Claude Code local/generated state
+.audit/local/
 .claude/local/
 auth.json
 .credentials.json
