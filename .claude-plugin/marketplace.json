@@ -9,7 +9,7 @@
     {
       "name": "dev-setup",
       "source": "./",
-      "description": "Engineering skills (tdd, diagnose, grill-with-docs, improve-codebase-architecture, to-prd), a human-in-the-loop audit-flow skill with the /audit command and a read-only reviewer agent, a search-first read-policy hook, and session/model-policy hooks that route subagents (Opus for code and judgment, Sonnet for context collection)."
+      "description": "Engineering skills (tdd, diagnose, grill-with-docs, improve-codebase-architecture, to-prd, plus pinned Superpowers brainstorming/writing-plans/verification/parallel-dispatch/code-review skills), a human-in-the-loop audit-flow skill with the /audit command, model-pinned reviewer/verifier/worker/explorer/researcher agents, a search-first read-policy hook, and session/model-policy hooks that route subagents (Opus for code and judgment, Sonnet for context collection)."
     }
   ]
 }

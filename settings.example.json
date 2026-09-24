@@ -9,7 +9,7 @@
       "source": {
         "source": "github",
         "repo": "ishaan-ghosh/claude-code-setup",
-        "ref": "v0.1.2"
+        "ref": "v0.1.3"
       }
     }
   },

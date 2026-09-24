@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -105,4 +106,64 @@ test("bare plugin agent names in subagent_type references are reported", async (
   });
   const { errors } = await checkRelease(root);
   assert.deepEqual(errors, ["commands/go.md: subagent_type helper must be demo-plugin:helper"]);
+});
+
+const sha = (text) => crypto.createHash("sha256").update(text).digest("hex");
+
+function vendored({ upstream = "---\nname: vend\ndescription: Vendored.\n---\nUpstream body.\n", committed = upstream, extra = {} } = {}) {
+  const license = "MIT upstream\n";
+  const lock = {
+    schema: 1,
+    repo: "https://example.invalid/up",
+    tag: "v1.0.0",
+    commit: "abc",
+    archiveUrl: "https://example.invalid/up.tar.gz",
+    archiveSha256: sha("archive"),
+    license: { spdx: "MIT", file: "vendor/up-LICENSE" },
+    enabled: ["vend"],
+    excluded: [{ skill: "dropped", reason: "Not wanted." }],
+    resources: [
+      { source: "up/LICENSE", target: "vendor/up-LICENSE", upstreamSha256: sha(license), sha256: sha(license), adapted: false },
+      { source: "up/skills/vend/SKILL.md", target: "skills/vend/SKILL.md", upstreamSha256: sha(upstream), sha256: sha(committed), adapted: committed !== upstream },
+    ],
+  };
+  return { "vendor/superpowers.lock.json": lock, "vendor/up-LICENSE": license, "skills/vend/SKILL.md": committed, ...extra };
+}
+
+test("a vendored skill that matches its lock passes, adapted or not", async (t) => {
+  assert.deepEqual((await checkRelease(await fixture(t, vendored()))).errors, []);
+  const adapted = vendored({ committed: "---\nname: vend\ndescription: Vendored.\n---\nAdapted body.\n" });
+  assert.deepEqual((await checkRelease(await fixture(t, adapted))).errors, []);
+});
+
+test("a tampered vendored file is reported", async (t) => {
+  const files = vendored();
+  files["skills/vend/SKILL.md"] = "---\nname: vend\ndescription: Vendored.\n---\nTampered.\n";
+  const { errors } = await checkRelease(await fixture(t, files));
+  assert.deepEqual(errors, ["skills/vend/SKILL.md: does not match its sha256 in vendor/superpowers.lock.json"]);
+});
+
+test("a file in a vendored skill that the lock does not cover is reported", async (t) => {
+  const { errors } = await checkRelease(await fixture(t, vendored({ extra: { "skills/vend/notes.md": "extra\n" } })));
+  assert.deepEqual(errors, ["skills/vend/notes.md: not covered by vendor/superpowers.lock.json"]);
+});
+
+test("vendor lock inconsistencies are reported", async (t) => {
+  const files = vendored({ extra: { "skills/dropped/SKILL.md": "---\nname: dropped\ndescription: Dropped.\n---\n" } });
+  const lock = files["vendor/superpowers.lock.json"];
+  lock.enabled = ["vend", "missing"];
+  lock.resources[1].adapted = true;
+  const { errors } = await checkRelease(await fixture(t, files));
+  assert.deepEqual(errors.sort(), [
+    "skills/vend/SKILL.md: marked adapted but identical to upstream",
+    "vendor/superpowers.lock.json: enabled skill missing has no locked SKILL.md",
+    "vendor/superpowers.lock.json: enabled skill missing has no vendored files",
+    "vendor/superpowers.lock.json: excluded skill dropped is present under skills/",
+  ]);
+});
+
+test("an unparseable vendor lock is reported", async (t) => {
+  const { errors } = await checkRelease(await fixture(t, { "vendor/superpowers.lock.json": "{ nope" }));
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /^vendor\/superpowers\.lock\.json: cannot parse JSON/);
 });

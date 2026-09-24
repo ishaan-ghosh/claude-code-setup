@@ -24,5 +24,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # actions/checkout stores the pushed tag as a lightweight ref; refetch the tag object itself.
+          git fetch --force origin "+refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
           git cat-file -e "${GITHUB_REF_NAME}^{tag}"
           node scripts/check-release.mjs --tag "$GITHUB_REF_NAME"
