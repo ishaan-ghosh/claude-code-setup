@@ -1,11 +1,16 @@
 {
   "name": "claude-code-setup",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Shared Claude Code setup: skills, an audit flow, and a read-policy hook, distributed as a plugin.",
   "type": "module",
   "scripts": {
-    "test": "node --test \"skills/audit-flow/test/*.test.mjs\""
+    "test": "node --test \"skills/audit-flow/test/*.test.mjs\" \"hooks/test/*.test.mjs\" \"scripts/test/*.test.mjs\"",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "check:release": "node scripts/check-release.mjs",
+    "check": "npm test && npm run check:secrets && npm run check:release",
+    "validate": "claude plugin validate ."
   },
+  "engines": { "node": ">=22" },
   "keywords": ["claude-code", "claude-code-plugin"]
 }

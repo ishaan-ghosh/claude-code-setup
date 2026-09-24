@@ -2,7 +2,8 @@
 
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { lstat, mkdir, open, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -17,6 +18,8 @@ const NEUTRAL_LOCAL_OVERRIDE = ".audit/local/audit.overrides.yaml";
 const LEGACY_LOCAL_OVERRIDE = ".claude/local/audit.overrides.yaml";
 const NEUTRAL_ARTIFACT_ROOT = ".audit/local/audits";
 const LEGACY_ARTIFACT_ROOT = ".claude/local/audits";
+const AUTO_EXCLUDE_ARTIFACT_SOURCES = new Set(["neutral-default", "neutral-bare-default"]);
+const AUTO_EXCLUDE_COMMENT = "# audit-flow: local audit artifacts (added by start-audit.mjs; see --no-auto-exclude)";
 const CONFINED_FRAGMENT_SOURCES = new Set(["repo-neutral", "repo-legacy", "default"]);
 const STANDARD_AUDIT_ARTIFACT_NAMES = [
 	"audit.yml",
@@ -66,6 +69,15 @@ export async function startAudit(options) {
 	const artifactRoot = artifactResolution.path;
 	const auditDir = join(artifactRoot, auditId);
 	const fragments = await readFragments(profileResolution.root, profile.fragments ?? [], profileResolution.source);
+	// Any local exclude edit must land before git metadata and the target snapshot are captured, so the
+	// recorded snapshot already reflects the final ignore state and later revalidation cannot see drift.
+	const artifactExclude = await ensureNeutralArtifactRootExcluded(
+		projectRoot,
+		artifactResolution,
+		auditDir,
+		normalizedOptions,
+		STANDARD_AUDIT_ARTIFACT_NAMES,
+	);
 	const git = await readGitMetadata(projectRoot);
 	const snapshot = await captureTargetSnapshot({
 		projectRoot,
@@ -176,6 +188,7 @@ export async function startAudit(options) {
 			findings: artifactNames.findings,
 			receipt: artifactNames.receipt,
 		},
+		artifact_exclude: artifactExclude,
 	};
 
 	const primaryPrompt = buildPrimaryPrompt({ auditId, target, metadata, fragments });
@@ -213,6 +226,7 @@ export async function startAudit(options) {
 		receiptPath: join(auditDir, artifactNames.receipt),
 		artifactRoot,
 		artifactRootSource: artifactResolution.source,
+		artifactExclude,
 	};
 }
 
@@ -308,7 +322,18 @@ async function resolveArtifactRoot(projectRoot, profile, explicitArtifactRoot) {
 	if (neutralRootExists) {
 		return { path: resolve(artifactBase, NEUTRAL_ARTIFACT_ROOT), source: "neutral-default" };
 	}
-	return { path: resolve(artifactBase, LEGACY_ARTIFACT_ROOT), source: "legacy-fallback" };
+	if (await hasLegacyAuditState(projectRoot, artifactBase)) {
+		return { path: resolve(artifactBase, LEGACY_ARTIFACT_ROOT), source: "legacy-fallback" };
+	}
+	return { path: resolve(artifactBase, NEUTRAL_ARTIFACT_ROOT), source: "neutral-bare-default" };
+}
+
+async function hasLegacyAuditState(projectRoot, artifactBase) {
+	return (
+		(await directoryExists(resolve(projectRoot, LEGACY_AUDIT_CONFIG_ROOT))) ||
+		(await directoryExists(resolve(artifactBase, LEGACY_ARTIFACT_ROOT))) ||
+		(await fileExists(resolve(projectRoot, LEGACY_LOCAL_OVERRIDE)))
+	);
 }
 
 function resolveArtifactBase(projectRoot, profile) {
@@ -494,6 +519,107 @@ async function ensureArtifactPathSafe(projectRoot, auditDir, options, plannedArt
 			`Artifact directory itself must be ignored so every future audit artifact remains outside the target snapshot: ${auditDir}. Ignore .audit/local/ (preferred), the complete audit directory, or legacy .claude/local/.`,
 		);
 	}
+}
+
+async function artifactPathsIgnored(topLevel, auditDir, plannedArtifactNames) {
+	for (const candidate of [auditDir, ...plannedArtifactNames.map((name) => join(auditDir, name))]) {
+		try {
+			await execFileAsync("git", ["check-ignore", "--quiet", "--no-index", "--", relative(topLevel, candidate)], { cwd: topLevel });
+		} catch {
+			return false;
+		}
+	}
+	return true;
+}
+
+function toAnchoredGitignoreDirectory(relativeDir) {
+	if (/[\r\n]/.test(relativeDir)) {
+		throw new Error(`Refusing to auto-exclude an artifact path containing a line break: ${relativeDir}`);
+	}
+	const escaped = relativeDir
+		.split(sep)
+		.map((segment) => segment.replace(/[\\*?[\]]/g, "\\$&"))
+		.join("/");
+	return `/${escaped}/`;
+}
+
+async function ensureNeutralArtifactRootExcluded(projectRoot, artifactResolution, auditDir, options, plannedArtifactNames) {
+	const record = { status: "not-applicable", modified: false, path: null, pattern: null };
+	if (!AUTO_EXCLUDE_ARTIFACT_SOURCES.has(artifactResolution.source)) {
+		return record;
+	}
+	if (options.noAutoExclude) {
+		return { ...record, status: "disabled" };
+	}
+
+	const artifactRoot = artifactResolution.path;
+	await assertNoSymlinkComponents(artifactRoot, "Audit artifact root");
+	const gitProbeCwd = await nearestExistingAncestor(auditDir, projectRoot);
+	const topLevel = await gitOutput(gitProbeCwd, "rev-parse", "--show-toplevel");
+	if (!topLevel) {
+		return record;
+	}
+	// The neutral artifact root is always <base>/.audit/local/audits; exclude the whole local directory.
+	const localDir = dirname(artifactRoot);
+	const relativeLocalDir = relative(topLevel, localDir);
+	if (!relativeLocalDir || relativeLocalDir === ".." || relativeLocalDir.startsWith(`..${sep}`) || isAbsolute(relativeLocalDir)) {
+		return record;
+	}
+	if (await artifactPathsIgnored(topLevel, auditDir, plannedArtifactNames)) {
+		return { ...record, status: "already-ignored" };
+	}
+
+	const pattern = toAnchoredGitignoreDirectory(relativeLocalDir);
+	const gitPath = await gitOutput(topLevel, "rev-parse", "--git-path", "info/exclude");
+	if (!gitPath) {
+		throw new Error(`Unable to resolve the local Git exclude file for ${topLevel}. Pass --no-auto-exclude and ignore .audit/local/ manually.`);
+	}
+	const excludePath = resolve(topLevel, gitPath);
+	const modified = await appendExcludePattern(excludePath, pattern);
+	return { status: modified ? "added" : "present", modified, path: excludePath, pattern };
+}
+
+async function assertExcludeFileSafe(excludePath) {
+	try {
+		await assertNoSymlinkComponents(excludePath, "Git exclude path");
+		const excludeStat = await lstat(excludePath);
+		if (!excludeStat.isFile()) {
+			throw new Error(`Git exclude path is not a regular file: ${excludePath}`);
+		}
+	} catch (error) {
+		if (error && typeof error === "object" && error.code === "ENOENT") return;
+		throw new Error(
+			`Refusing to auto-edit the local Git exclude file: ${error instanceof Error ? error.message : String(error)}. Pass --no-auto-exclude and ignore .audit/local/ manually.`,
+		);
+	}
+}
+
+async function appendExcludePattern(excludePath, pattern) {
+	await assertExcludeFileSafe(excludePath);
+	let existing = "";
+	try {
+		existing = await readFile(excludePath, "utf8");
+	} catch (error) {
+		if (!(error && typeof error === "object" && error.code === "ENOENT")) throw error;
+	}
+	if (existing.split("\n").some((line) => line.replace(/\s+$/, "") === pattern)) {
+		return false;
+	}
+
+	await mkdir(dirname(excludePath), { recursive: true });
+	await assertExcludeFileSafe(excludePath);
+	const separator = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+	const handle = await open(
+		excludePath,
+		fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW,
+		0o644,
+	);
+	try {
+		await handle.writeFile(`${separator}${AUTO_EXCLUDE_COMMENT}\n${pattern}\n`, "utf8");
+	} finally {
+		await handle.close();
+	}
+	return true;
 }
 
 async function prepareAuditDirectory(projectRoot, artifactRoot, auditDir, auditId, options, plannedArtifactNames) {
@@ -846,6 +972,7 @@ function parseArgs(argv) {
 		else if (arg === "--base") options.base = argv[++i];
 		else if (arg === "--head") options.head = argv[++i];
 		else if (arg === "--allow-unignored-artifacts") options.allowUnignoredArtifacts = true;
+		else if (arg === "--no-auto-exclude") options.noAutoExclude = true;
 		else if (arg === "--help" || arg === "-h") options.help = true;
 		else positional.push(arg);
 	}
@@ -860,7 +987,7 @@ function parseArgs(argv) {
 }
 
 function usage() {
-	return `Usage: node scripts/start-audit.mjs --profile <profile> [--target <target>] [--project-root <path>] [--base <git-ref>] [--head <git-ref>] [--audit-config-root <path>] [--artifact-root <path>]\n\nExamples:\n  node scripts/start-audit.mjs --profile pr --target "PR #14" --base origin/main --head HEAD\n  node scripts/start-audit.mjs diff\n  node scripts/start-audit.mjs commit "staged diff"\n\nEach selected Git repo is bound to an exact git-worktree-v2 snapshot. PR/stack audits require explicit base and head refs for every repository, and those refs must resolve to different commits. Other audit types use ref precedence profile repos[].base/head, CLI --base/--head, profile base/head, then HEAD. Profile resolution: direct profile path, explicit --audit-config-root, repo .audit/, legacy repo .claude/audit/, then built-in defaults. Artifact resolution: --artifact-root, profile artifact_root, neutral .audit/local/audits, then legacy .claude/local/audits for legacy-only repositories. Artifact paths inside audited Git repositories must be ignored; --allow-unignored-artifacts is rejected because generated reports would invalidate the snapshot.\n`;
+	return `Usage: node scripts/start-audit.mjs --profile <profile> [--target <target>] [--project-root <path>] [--base <git-ref>] [--head <git-ref>] [--audit-config-root <path>] [--artifact-root <path>] [--no-auto-exclude]\n\nExamples:\n  node scripts/start-audit.mjs --profile pr --target "PR #14" --base origin/main --head HEAD\n  node scripts/start-audit.mjs diff\n  node scripts/start-audit.mjs commit "staged diff"\n\nWorks in any Git repository, including ones with no .audit/, .claude/, CLAUDE.md, or AGENTS.md: the built-in commit/pr profiles are used and artifacts go to .audit/local/audits.\n\nEach selected Git repo is bound to an exact git-worktree-v2 snapshot. PR/stack audits require explicit base and head refs for every repository, and those refs must resolve to different commits. Other audit types use ref precedence profile repos[].base/head, CLI --base/--head, profile base/head, then HEAD. Profile resolution: direct profile path, explicit --audit-config-root, repo .audit/, legacy repo .claude/audit/, then built-in defaults. Artifact resolution: --artifact-root, profile artifact_root, neutral .audit/local/audits when .audit/ exists, legacy .claude/local/audits only for legacy repositories (legacy .claude/audit/, .claude/local/audits, or .claude/local/audit.overrides.yaml present and no .audit/), otherwise neutral .audit/local/audits.\n\nArtifact paths inside audited Git repositories must be ignored; --allow-unignored-artifacts is rejected because generated reports would invalidate the snapshot. When the neutral default root is selected (not --artifact-root or profile artifact_root) and is not yet ignored, the helper appends an anchored /.audit/local/ rule to the containing repository's local exclude file (git rev-parse --git-path info/exclude) before capturing the snapshot, and records the edit under artifact_exclude in audit.yml. It refuses symbolic-link exclude paths. --no-auto-exclude disables this and fails with instructions instead.\n`;
 }
 
 async function main() {
