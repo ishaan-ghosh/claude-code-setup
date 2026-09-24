@@ -11,7 +11,7 @@ Use this skill to run explicit, human-approved audits before commits, pushes, me
 
 - Use a parent orchestrator plus separate reviewer sessions.
 - The parent Claude Code session is the audit cockpit: select the target, compose the profile, manage artifacts, synthesize reviewer outputs, support interactive human drill-down, and record final accepted findings.
-- Launch separate reviewer sessions with the Agent tool using the bundled read-only `reviewer` subagent. Give each run only its intended prompt and target inputs. Reviewers may run validation and write audit artifacts, but they must not edit application code.
+- Launch separate reviewer sessions with the Agent tool using the bundled read-only `dev-setup:reviewer` subagent (pinned to opus). Give each run only its intended prompt and target inputs. Reviewers may run validation and write audit artifacts, but they must not edit application code.
 - Fixing is a separate pass after human acceptance of findings, handled by a writer/worker session scoped to accepted findings only.
 - The live, resumable audit session is the canonical human approval checkpoint. Files are durable receipts and handoff artifacts generated from the live discussion.
 
@@ -183,7 +183,7 @@ Treat these checks as local structural orchestrator attestations. They are not c
 Do not stop after generating prompts. Launch the primary reviewer automatically:
 
 1. Run `start-audit.mjs` for the requested profile/target.
-2. Launch a fresh reviewer with the Agent tool, `subagent_type` set to `reviewer` (the read-only reviewer bundled with this plugin), passing the contents of `primary-reviewer-prompt.md` as the task. Instruct it to operate in the audited repo root and to return the full audit report as its final message.
+2. Launch a fresh reviewer with the Agent tool, `subagent_type` set to `dev-setup:reviewer` (the read-only reviewer bundled with this plugin, pinned to opus), passing the contents of `primary-reviewer-prompt.md` as the task. Instruct it to operate in the audited repo root and to return the full audit report as its final message.
 3. The reviewer must not edit application code.
 4. Save the returned report to `primary-initial.md`, then record it with nonempty `--tool`, `--model`, and unique `--session-id` values.
 5. Tell the human where `primary-initial.md` and the blind `peer-review-prompt.md` were written. Do not give the peer the primary report or its path. Pause for the semi-automated raw-target peer step.
@@ -213,7 +213,7 @@ A completed audit should write `receipt.md` under the audit artifact directory. 
 
 ## Review/fix separation
 
-Reviewer sessions are read-only with respect to application code. They may create audit artifacts only under the selected neutral `.audit/local/audits/` or legacy `.claude/local/audits/` directory and run validation commands, but must not modify source, tests, docs, configs, migrations, or generated committed assets. The audited Git state is frozen through finalization. A separate fix pass may edit code only after the human accepts findings, approves the fix scope, and the current audit is finalized. For local work, offer both a generated `fix-prompt.md` and an orchestrated fix pass; default to launching a separate writer session (the Agent tool with a general-purpose subagent, or a fresh Claude Code session). The writer must fix only accepted findings, ignore rejected/deferred findings, run targeted validation, and return a summary/diff. Because that pass changes the snapshot, start a follow-up audit of the resulting full diff before committing or pushing. For coworker PRs, generate review comments from accepted findings instead of fixing unless the human explicitly asks to make changes on a branch.
+Reviewer sessions are read-only with respect to application code. They may create audit artifacts only under the selected neutral `.audit/local/audits/` or legacy `.claude/local/audits/` directory and run validation commands, but must not modify source, tests, docs, configs, migrations, or generated committed assets. The audited Git state is frozen through finalization. A separate fix pass may edit code only after the human accepts findings, approves the fix scope, and the current audit is finalized. For local work, offer both a generated `fix-prompt.md` and an orchestrated fix pass; default to launching a separate writer session (the Agent tool with `subagent_type: "general-purpose"` and `model: "opus"`, or a fresh Claude Code session). The writer must fix only accepted findings, ignore rejected/deferred findings, run targeted validation, and return a summary/diff. Because that pass changes the snapshot, start a follow-up audit of the resulting full diff before committing or pushing. For coworker PRs, generate review comments from accepted findings instead of fixing unless the human explicitly asks to make changes on a branch.
 
 ## GitHub PR review comment policy
 

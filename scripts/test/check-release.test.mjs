@@ -98,3 +98,11 @@ test("parseFrontmatter reads quoted values and rejects unclosed fences", () => {
   assert.deepEqual(parseFrontmatter('---\nname: "a"\ndescription: \'b c\'\n---\nbody'), { name: "a", description: "b c" });
   assert.equal(parseFrontmatter("---\nname: a\n"), null);
 });
+
+test("bare plugin agent names in subagent_type references are reported", async (t) => {
+  const root = await fixture(t, {
+    "commands/go.md": "---\ndescription: Go\n---\nLaunch the Agent tool (`subagent_type: helper`), then `subagent_type: demo-plugin:helper`.\n",
+  });
+  const { errors } = await checkRelease(root);
+  assert.deepEqual(errors, ["commands/go.md: subagent_type helper must be demo-plugin:helper"]);
+});
