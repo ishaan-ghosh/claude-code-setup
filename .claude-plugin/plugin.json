@@ -1,7 +1,7 @@
 {
   "name": "dev-setup",
   "displayName": "Claude Code Dev Setup",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Shared Claude Code setup: engineering skills, a human-in-the-loop audit flow, a search-first read-policy hook, and session/model-policy hooks that route subagents (Opus for code and judgment, Sonnet for context collection).",
   "author": {
     "name": "Ishaan Ghosh",

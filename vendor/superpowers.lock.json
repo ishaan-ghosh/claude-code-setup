@@ -1,0 +1,139 @@
+{
+  "schema": 1,
+  "name": "superpowers",
+  "repo": "https://github.com/obra/superpowers",
+  "tag": "v6.4.1",
+  "commit": "5bf4e78011075bcfc0dc295f0724994cd123ee71",
+  "archiveUrl": "https://github.com/obra/superpowers/archive/5bf4e78011075bcfc0dc295f0724994cd123ee71.tar.gz",
+  "archiveSha256": "9a6bcd2862a65aff392afb61e4e0532f024b99835848fefa9f6d511a608e9ce8",
+  "license": {
+    "spdx": "MIT",
+    "copyright": "Copyright (c) 2025 Jesse Vincent",
+    "file": "vendor/superpowers-LICENSE"
+  },
+  "enabled": [
+    "brainstorming",
+    "writing-plans",
+    "verification-before-completion",
+    "dispatching-parallel-agents",
+    "receiving-code-review"
+  ],
+  "excluded": [
+    {
+      "skill": "test-driven-development",
+      "reason": "Covered by dev-setup:tdd."
+    },
+    {
+      "skill": "systematic-debugging",
+      "reason": "Covered by dev-setup:diagnose."
+    },
+    {
+      "skill": "requesting-code-review",
+      "reason": "Covered by dev-setup:audit-flow and the dev-setup:reviewer agent."
+    },
+    {
+      "skill": "using-superpowers",
+      "reason": "Its forced skill-use bootstrap conflicts with the plugin's session policy."
+    },
+    {
+      "skill": "writing-skills",
+      "reason": "Out of scope for this plugin."
+    },
+    {
+      "skill": "diagnosing-superpowers",
+      "reason": "Diagnoses Superpowers sessions and files reports to its maintainers; out of scope for this plugin."
+    },
+    {
+      "skill": "subagent-driven-development",
+      "reason": "Routed through the orchestrator, dev-setup:worker, and the session policy's approval rules."
+    },
+    {
+      "skill": "executing-plans",
+      "reason": "Routed through the orchestrator, dev-setup:worker, and the session policy's approval rules."
+    },
+    {
+      "skill": "using-git-worktrees",
+      "reason": "Routed through the orchestrator and the session policy's approval rules."
+    },
+    {
+      "skill": "finishing-a-development-branch",
+      "reason": "Routed through the orchestrator, dev-setup:audit-flow, and the session policy's approval rules for push, PR, and merge."
+    }
+  ],
+  "excludedResources": [
+    {
+      "source": "skills/brainstorming/visual-companion.md",
+      "reason": "Browser-based visual companion is not vendored; brainstorming is text-only."
+    },
+    {
+      "source": "skills/brainstorming/scripts/",
+      "reason": "Visual companion server and helpers are not vendored."
+    }
+  ],
+  "adaptations": [
+    "Skill names keep upstream names; the plugin namespaces them as dev-setup:<name>. Every adapted file carries `<!-- dev-setup adaptation: ... -->` comments describing its changes.",
+    "brainstorming/SKILL.md: remove the Visual Companion checklist step and section (text-only brainstorming); point the bounded path's TDD note at dev-setup:tdd.",
+    "brainstorming/spec-document-reviewer-prompt.md, writing-plans/plan-document-reviewer-prompt.md: dispatch the pinned read-only dev-setup:reviewer agent instead of an unpinned general-purpose subagent.",
+    "writing-plans/SKILL.md: route plan execution (upstream subagent-driven-development / executing-plans / using-git-worktrees) through the orchestrator, dev-setup:worker, dev-setup:reviewer or dev-setup:audit-flow, and dev-setup:tdd.",
+    "dispatching-parallel-agents/SKILL.md: dispatch examples use dev-setup:worker; add the session policy's model rule (opus for code and judgment, sonnet only for mechanical context collection, no fork).",
+    "receiving-code-review/SKILL.md: a GitHub thread reply requires the user's explicit approval for that reply."
+  ],
+  "resources": [
+    {
+      "source": "superpowers-5bf4e78011075bcfc0dc295f0724994cd123ee71/skills/brainstorming/SKILL.md",
+      "target": "skills/brainstorming/SKILL.md",
+      "upstreamSha256": "a32d2255354775aa124855aa7100cf276bea096fff4ebb3a0edf57be216e6c72",
+      "sha256": "4f80e2421750a82bfc3ae58166ca951a8f940a70dd7f978c29818cc2a22bedd0",
+      "adapted": true
+    },
+    {
+      "source": "superpowers-5bf4e78011075bcfc0dc295f0724994cd123ee71/skills/brainstorming/spec-document-reviewer-prompt.md",
+      "target": "skills/brainstorming/spec-document-reviewer-prompt.md",
+      "upstreamSha256": "95a0a195de9d984be2fffa95bab16fc8c563bc296a9cfc5e9c29cb3ece0d7457",
+      "sha256": "4c0e00bb89b85e56eeb059b789ce091319e6f0c64db63aa5387dd94681ded71b",
+      "adapted": true
+    },
+    {
+      "source": "superpowers-5bf4e78011075bcfc0dc295f0724994cd123ee71/skills/dispatching-parallel-agents/SKILL.md",
+      "target": "skills/dispatching-parallel-agents/SKILL.md",
+      "upstreamSha256": "1968923066f3b707eb01d1992cdf4c42284c3855f70253b9cd5000ff45fca13c",
+      "sha256": "8d1ffddfce212c36027fc79cfd40be0895c873c3450b0653352f1d2a8a4c9f26",
+      "adapted": true
+    },
+    {
+      "source": "superpowers-5bf4e78011075bcfc0dc295f0724994cd123ee71/skills/receiving-code-review/SKILL.md",
+      "target": "skills/receiving-code-review/SKILL.md",
+      "upstreamSha256": "091df1629510af1b92fc4abd6f96732ebedb4cb2c0f3457e8f2740b0504a2438",
+      "sha256": "4ca055bb66f52de06fb0a8b886d3f9205d7e246f28f9d120adcde8d54aa5d412",
+      "adapted": true
+    },
+    {
+      "source": "superpowers-5bf4e78011075bcfc0dc295f0724994cd123ee71/skills/verification-before-completion/SKILL.md",
+      "target": "skills/verification-before-completion/SKILL.md",
+      "upstreamSha256": "2befe7fc55bcadaa3d97dd9e8efeb633d2561c0ebe74c5a8b17c4d9e7e4520b3",
+      "sha256": "2befe7fc55bcadaa3d97dd9e8efeb633d2561c0ebe74c5a8b17c4d9e7e4520b3",
+      "adapted": false
+    },
+    {
+      "source": "superpowers-5bf4e78011075bcfc0dc295f0724994cd123ee71/skills/writing-plans/plan-document-reviewer-prompt.md",
+      "target": "skills/writing-plans/plan-document-reviewer-prompt.md",
+      "upstreamSha256": "aa728b96aad603c8be28875a4305637f6c984aa81ffcadcb13e743202fa2a0c7",
+      "sha256": "7fa1ccefa3e7cef4c586b33979c930b5db5240d7b5599ab37b27db732e96cd9b",
+      "adapted": true
+    },
+    {
+      "source": "superpowers-5bf4e78011075bcfc0dc295f0724994cd123ee71/skills/writing-plans/SKILL.md",
+      "target": "skills/writing-plans/SKILL.md",
+      "upstreamSha256": "0bc3d36590f7b2c323ed3ec18ff77e9f8ed57af42f5680a02b11a2d20de265cf",
+      "sha256": "90f555ace43c363a177a10ea1968a12fccf17f0e3ddd2fa91cf031bd39da2b1d",
+      "adapted": true
+    },
+    {
+      "source": "superpowers-5bf4e78011075bcfc0dc295f0724994cd123ee71/LICENSE",
+      "target": "vendor/superpowers-LICENSE",
+      "upstreamSha256": "a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400",
+      "sha256": "a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400",
+      "adapted": false
+    }
+  ]
+}

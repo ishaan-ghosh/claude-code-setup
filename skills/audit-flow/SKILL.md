@@ -1,6 +1,6 @@
 ---
 name: audit-flow
-description: Orchestrate human-in-the-loop code and PR audits with repo-local prompt profiles, isolated reviewer sessions, cross-model peer review artifacts, and final fix or GitHub review handoff. Use before committing, pushing, merging, or submitting PR review feedback.
+description: Orchestrate human-in-the-loop commit, PR, stacked-PR, and multi-repo audits with immutable target snapshots, a blind peer, two-reviewer finding verification, and fix or GitHub-review handoff. Works in any Git repo with no setup. Use before committing, pushing, merging, or submitting PR review feedback, or when the user asks for an audit.
 ---
 
 # Audit Flow
@@ -10,8 +10,11 @@ Use this skill to run explicit, human-approved audits before commits, pushes, me
 ## Core model
 
 - Use a parent orchestrator plus separate reviewer sessions.
+- The parent session is the sole orchestrator for one audit directory: only it runs the helpers and writes audit.yml, prompts, synthesis, and final artifacts. Do not run two orchestrators against the same audit ID, and do not mirror a run under another harness directory (.claude/, .codex/, .pi/).
 - The parent Claude Code session is the audit cockpit: select the target, compose the profile, manage artifacts, synthesize reviewer outputs, support interactive human drill-down, and record final accepted findings.
-- Launch separate reviewer sessions with the Agent tool using the bundled read-only `dev-setup:reviewer` subagent (pinned to opus). Give each run only its intended prompt and target inputs. Reviewers may run validation and write audit artifacts, but they must not edit application code.
+- Launch separate reviewer sessions with the Agent tool using the bundled read-only `dev-setup:reviewer` subagent (pinned to opus). Give each run only its intended prompt and target inputs. Reviewers may run validation and write audit artifacts, but they must not edit application code, and must never create, edit, or overwrite `audit.yml`, prompts, or another reviewer's report.
+- Bundled agents (all pinned in frontmatter, so no explicit `model` is needed): `dev-setup:reviewer` (opus) for primary, peer, and final-diff runs; `dev-setup:audit-verifier` (opus) for focused finding verification; `dev-setup:worker` (opus) for the post-finalization fix pass. Each fixed stage and each focused verification is a fresh, distinct Agent launch; never reuse the primary run for the final-diff stage.
+- For follow-up questions or a re-review of the same change within one recorded run (for example, human drill-down on a report), prefer `SendMessage` to the same reviewer agent over a new launch so its context and dispatch identity carry over. Stages that must be distinct runs (peer, final-diff, each verifier) are always new launches.
 - Fixing is a separate pass after human acceptance of findings, handled by a writer/worker session scoped to accepted findings only.
 - The live, resumable audit session is the canonical human approval checkpoint. Files are durable receipts and handoff artifacts generated from the live discussion.
 
@@ -77,7 +80,7 @@ candidate finding → two-run corroborated finding → human accepted/rejected �
 
 Require at least two separately recorded reviewer runs to report the target evidence before a finding enters synthesis, human review, terminal findings, a fix plan, or a GitHub review packet. Do not treat agreement with another reviewer's prose as target-evidence review.
 
-Primary+peer corroboration satisfies this gate only when both reports contain the same target evidence. Give the peer only the fixed generated `peer-review-prompt.md`; it omits repository-controlled profile fragments as well as the primary artifact/path. Record its raw-target report before disclosing primary output. Use a separate prompt, artifact, and dispatch for later critique. Give any focused verifier a saved nonempty `verification-<name>-prompt.md`, save its report as `verification-<name>.md`, and record both with a new reviewer key and identity. Keep one-reviewer concerns outside terminal `findings.json`, for example as residual/open questions.
+Primary+peer corroboration satisfies this gate only when both reports contain the same target evidence. Give the peer only the fixed generated `peer-review-prompt.md`; it omits repository-controlled profile fragments as well as the primary artifact/path. Record its raw-target report before disclosing primary output. Use a separate prompt, artifact, and dispatch for later critique. Give any focused verifier a saved nonempty `verification-<name>-prompt.md`, launch one fresh Agent run per saved prompt with `subagent_type: dev-setup:audit-verifier` (pinned to opus), save its report as `verification-<name>.md`, and record both with a new reviewer key and identity. Route anything the verifier lists under 'Out-of-scope observations' through this same gate. Keep one-reviewer concerns outside terminal `findings.json`, for example as residual/open questions.
 
 The final-diff reviewer is a separate required gate after primary and peer. It reviews the entire frozen target for interactions and omissions. It does not automatically count as a second source for prior findings, and any new final-diff finding still needs a second target-evidence reviewer before synthesis.
 
@@ -87,7 +90,9 @@ Before synthesis, compare reviewer artifacts, list every candidate with its conc
 
 Audit agents may run safe, targeted read-only or validation commands automatically when they materially improve confidence. Examples include `git status`, `git diff`, `gh pr view`, targeted tests, linters, typechecks, config/schema checks, and read-only migration graph inspection.
 
-Require explicit human approval before expensive, stateful, hardware, network-mutating, or destructive commands. Examples include physical robot runs, database/service mutation, Docker compose lifecycle commands unless pre-approved by the profile/session, posting GitHub comments, committing, pushing, long Isaac/GPU runs, commands touching secrets, and external production-system operations.
+Require explicit human approval before expensive, stateful, hardware, network-mutating, or destructive commands. Examples include physical robot runs, database/service mutation, Docker compose lifecycle commands unless pre-approved by the profile/session, posting GitHub comments, committing unless already authorized, pushing, merging, tagging or releasing, long Isaac/GPU runs, commands touching secrets, and external production-system operations.
+
+Every reviewer, verifier, and worker report must list each validation command verbatim with its observed result. A claim that was not checked by reading the target or running a command stays an open question; it is never presented as confirmed or fixed.
 
 ## V1 cross-model validation
 
@@ -99,7 +104,7 @@ Use semi-automated peer-review handoff in v1:
 2. The human explicitly launches or approves the blind peer reviewer using only its raw-target prompt.
 3. The human or a later helper writes the raw peer output to `peer-review.md` and records it before any primary-report disclosure. An optional later critique is a separate prompt/artifact/run.
 4. The orchestrator applies the two-agent finding gate, dispatches focused verifiers for peer-only, primary-only, disputed, or final-diff-only findings, then synthesizes only findings that pass.
-5. A distinct reviewer runs `final-diff-reviewer-prompt.md`; record it as `--stage final-diff` before finalization.
+5. A distinct, fresh `dev-setup:reviewer` run (never the primary run resumed) executes `final-diff-reviewer-prompt.md`; record it as `--stage final-diff` before finalization.
 
 A natural cross-model peer reviewer is a second harness or model — for example, run the peer review with a different provider via its own CLI, or in a separate Claude Code session pinned to a different model.
 
@@ -198,13 +203,13 @@ If launching a subagent is not possible, perform the primary review in the paren
 4. Launch the primary reviewer automatically and save its report to `primary-initial.md`.
 5. Record primary with complete tool/model/session identity.
 6. Launch the peer with only `peer-review-prompt.md`; do not disclose the audit directory. Save its raw-target output to `peer-review.md`, then record peer with complete identity. Only then may a separate critique see primary output.
-7. Compare raw reviewer artifacts, identify findings with fewer than two reviewer keys, launch focused verifiers from saved `verification-*-prompt.md` prompts, save/record `verification-*.md`, and exclude one-run concerns from terminal findings.
-8. Launch a distinct reviewer with `final-diff-reviewer-prompt.md`, save `final-diff-review.md`, and record `--stage final-diff`. Route any new finding through the same verification gate.
+7. Compare raw reviewer artifacts, identify findings with fewer than two reviewer keys, launch one fresh `dev-setup:audit-verifier` run per saved `verification-*-prompt.md` prompt, save/record `verification-*.md`, and exclude one-run concerns from terminal findings.
+8. Launch a distinct, fresh `dev-setup:reviewer` run (not the primary run resumed) with `final-diff-reviewer-prompt.md`, save `final-diff-review.md`, and record `--stage final-diff`. Route any new finding through the same verification gate.
 9. Synthesize disagreements and candidate findings that passed the two-agent gate.
 10. Keep the parent session live for human drill-down.
 11. After human confirmation, write final accepted/rejected/deferred findings and a fix or PR-review plan.
 12. Produce `findings.json` and `receipt.md`, then use `finalize-audit.mjs`. Any snapshot or digest drift blocks finalization.
-13. Only after finalization run a fixing agent or generate GitHub review comments. Code changes create a new target snapshot and therefore require a new audit before commit/push.
+13. Only after finalization run a fixing agent (`dev-setup:worker`) or generate GitHub review comments. Code changes create a new target snapshot and therefore require a new audit before commit/push.
 14. In the follow-up audit, run targeted verification and re-audit the whole resulting diff, marking accepted findings `fixed`, `partially_fixed`, `still_open`, or `verified` as appropriate.
 
 ## Audit receipt
@@ -213,7 +218,7 @@ A completed audit should write `receipt.md` under the audit artifact directory. 
 
 ## Review/fix separation
 
-Reviewer sessions are read-only with respect to application code. They may create audit artifacts only under the selected neutral `.audit/local/audits/` or legacy `.claude/local/audits/` directory and run validation commands, but must not modify source, tests, docs, configs, migrations, or generated committed assets. The audited Git state is frozen through finalization. A separate fix pass may edit code only after the human accepts findings, approves the fix scope, and the current audit is finalized. For local work, offer both a generated `fix-prompt.md` and an orchestrated fix pass; default to launching a separate writer session (the Agent tool with `subagent_type: "general-purpose"` and `model: "opus"`, or a fresh Claude Code session). The writer must fix only accepted findings, ignore rejected/deferred findings, run targeted validation, and return a summary/diff. Because that pass changes the snapshot, start a follow-up audit of the resulting full diff before committing or pushing. For coworker PRs, generate review comments from accepted findings instead of fixing unless the human explicitly asks to make changes on a branch.
+Reviewer sessions are read-only with respect to application code. They may create audit artifacts only under the selected neutral `.audit/local/audits/` or legacy `.claude/local/audits/` directory and run validation commands, but must not modify source, tests, docs, configs, migrations, or generated committed assets. The audited Git state is frozen through finalization. A separate fix pass may edit code only after the human accepts findings, approves the fix scope, and the current audit is finalized. For local work, offer both a generated `fix-prompt.md` and an orchestrated fix pass; default to launching a separate writer session (the Agent tool with `subagent_type: dev-setup:worker`, pinned to opus, or a fresh Claude Code session). The writer must fix only accepted findings, leave rejected/deferred findings untouched, run targeted validation, and return changed files plus exact validation commands and observed results. Because that pass changes the snapshot, start a follow-up audit of the resulting full diff before committing or pushing. For coworker PRs, generate review comments from accepted findings instead of fixing unless the human explicitly asks to make changes on a branch.
 
 ## GitHub PR review comment policy
 
@@ -223,4 +228,4 @@ In v1, prepare a GitHub review packet instead of directly posting externally vis
 
 ## Output standards
 
-Put findings first, ordered by severity. Confirmed findings need exact file/line references, impact, evidence, and concrete reviewer keys/artifacts containing the target-evidence review. Separate confirmed findings, open questions/assumptions, optional suggestions, and residual validation gaps. Never present a single-reviewer concern as confirmed. Report intended peer input isolation separately from later critique, and final-diff completion separately from finding-verification counts.
+Put findings first, ordered by severity. Confirmed findings need exact file/line references, impact, evidence, and concrete reviewer keys/artifacts containing the target-evidence review. Separate confirmed findings, open questions/assumptions, optional suggestions, and residual validation gaps. Include exact validation commands and observed results; unverified claims stay open questions. Never present a single-reviewer concern as confirmed. Report intended peer input isolation separately from later critique, and final-diff completion separately from finding-verification counts.

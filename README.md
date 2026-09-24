@@ -17,8 +17,15 @@ The `dev-setup` plugin bundles:
   - `audit-flow` — human-in-the-loop commit/PR/platform audit workflow with repo-local prompt profiles, an automated primary-reviewer handoff, cross-model peer review artifacts, and local artifact receipts.
 - **Command** (`commands/`)
   - `/audit` — start the audit flow (`/audit <commit|diff|staged|pr|stack> [target]`).
-- **Agent** (`agents/`)
-  - `reviewer` — a read-only auditor subagent used by `audit-flow` (and usable on its own).
+- **Agents** (`agents/`, referenced as `dev-setup:<name>`; each pins its model, so it launches without an explicit `model` under the model-policy hook)
+  - `reviewer` (opus) — read-only code/PR auditor; primary, blind-peer, and final-diff reviewer in audit-flow, or any separate review pass.
+  - `audit-verifier` (opus) — read-only focused verifier; one confirmed/disputed/unverified verdict per finding in a named scope, with file:line evidence, for the audit-flow two-reviewer gate.
+  - `worker` (opus) — scoped implementation worker for approved plans and accepted audit findings (the audit-flow fix writer); behavior-first tests, incremental validation, no push/merge/release.
+  - `repo-explorer` (sonnet) — read-only repo sweep: facts with absolute paths and line refs, conventions, validation commands, unknowns. No recommendations.
+  - `github-researcher` (sonnet) — read-only GitHub/git-history research (`gh` views and GET-only `gh api`, `git log`/`show`), with links and exact evidence.
+  - `web-researcher` (sonnet) — read-only research from official primary sources, returned as a dated, cited evidence table.
+
+  Sonnet agents are for mechanical context collection only; the orchestrator spot-checks any claim a decision depends on.
 - **Hooks** (`hooks/`)
   - `read-policy` — nudges toward a search-first, paginated-read strategy to keep context small (Read/Grep/Glob and Bash).
   - `session-policy` — injects [`policy/session-policy.md`](policy/session-policy.md) at session start so the defaults apply in every repo, even ones with no `CLAUDE.md`/`AGENTS.md`.
@@ -26,6 +33,20 @@ The `dev-setup` plugin bundles:
 - **`settings.example.json`** — a non-secret user-settings template (model, theme, marketplace registration, plugin enablement, read-policy tuning, a small permissions allowlist).
 
 The engineering skills are vendored and adapted from [`mattpocock/skills`](https://github.com/mattpocock/skills); see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+### Vendored Superpowers skills
+
+Five skills are vendored from [obra/superpowers](https://github.com/obra/superpowers) (MIT), pinned to `v6.4.1` (`5bf4e78`):
+
+| Skill | Use |
+|---|---|
+| `dev-setup:brainstorming` | Before creative work: classify spike / bounded / architectural, agree the design, then (architectural) write a spec. Text-only; the upstream browser companion is not included. |
+| `dev-setup:writing-plans` | Turn an approved spec into a task-by-task plan; execution goes through the orchestrator and `dev-setup:worker`, with `dev-setup:reviewer` or `audit-flow` at the end. |
+| `dev-setup:verification-before-completion` | No "done", "fixed", or "passing" claims without fresh command output. |
+| `dev-setup:dispatching-parallel-agents` | Fan out independent problems to model-pinned subagents. |
+| `dev-setup:receiving-code-review` | Evaluate review feedback technically before acting; GitHub replies need your explicit approval. |
+
+Other upstream skills are excluded because this plugin already covers them (`tdd`, `diagnose`, `audit-flow`) or because they conflict with the session policy; `vendor/superpowers.lock.json` lists each one with its reason. The lock pins every vendored file by hash and marks the files adapted for this plugin; `npm run check` verifies the committed files against it offline, and `npm run vendor:verify` re-checks the pin against the upstream archive (needs network).
 
 ## Audit workspace layout
 
@@ -55,14 +76,14 @@ This provenance is local caller/orchestrator-attested bookkeeping, not a cryptog
 Add the marketplace and install the plugin:
 
 ```text
-/plugin marketplace add ishaan-ghosh/claude-code-setup@v0.1.2
+/plugin marketplace add ishaan-ghosh/claude-code-setup@v0.1.3
 /plugin install dev-setup@claude-code-setup
 ```
 
 Or from the CLI:
 
 ```bash
-claude plugin marketplace add ishaan-ghosh/claude-code-setup@v0.1.2
+claude plugin marketplace add ishaan-ghosh/claude-code-setup@v0.1.3
 claude plugin install dev-setup@claude-code-setup
 ```
 
@@ -80,7 +101,7 @@ It registers the marketplace and enables the plugin declaratively:
 ```json
 {
   "extraKnownMarketplaces": {
-    "claude-code-setup": { "source": { "source": "github", "repo": "ishaan-ghosh/claude-code-setup", "ref": "v0.1.2" } }
+    "claude-code-setup": { "source": { "source": "github", "repo": "ishaan-ghosh/claude-code-setup", "ref": "v0.1.3" } }
   },
   "enabledPlugins": { "dev-setup@claude-code-setup": true }
 }
