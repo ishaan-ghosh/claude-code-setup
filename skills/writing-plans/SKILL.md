@@ -173,13 +173,13 @@ them to review the plan and confirm it captures what they want; wait for that
 review before implementation, then use the preserved method. Otherwise, ask
 them to review the plan and choose an execution method before implementation.
 
-<!-- dev-setup adaptation: upstream's subagent-driven-development and executing-plans skills are not vendored; both execution methods are routed through the orchestrator, the pinned dev-setup:worker and dev-setup:reviewer agents (model: opus), and the session policy's approval rules. -->
+<!-- dev-setup adaptation: upstream's subagent-driven-development and executing-plans skills are not vendored; both execution methods are routed through the orchestrator, the pinned dev-setup:worker (model: sonnet) and dev-setup:adversarial-reviewer (model: opus) agents, and the session policy's approval rules. -->
 **When no execution method has already been supplied:**
 
 **"Plan complete and saved to `docs/superpowers/plans/<filename>.md`. Please review the plan. Which execution approach would you prefer?**
 
-- **Subagent-driven** - A fresh `dev-setup:worker` subagent implements each task and I review its diff and verify it before the next one starts, then a fresh `dev-setup:reviewer` checks the whole branch at the end. Most thorough; costs a fresh context per task.
-- **Native** - I implement every task myself in this session, then one fresh `dev-setup:reviewer` (pinned to the most capable model) checks the whole branch. Cheapest and fastest; no independent review until the end.
+- **Subagent-driven** - A fresh `dev-setup:worker` subagent implements each task and I review its diff and verify it before the next one starts, then a fresh `dev-setup:adversarial-reviewer` checks the whole branch at the end. Most thorough; costs a fresh context per task.
+- **Native** - I implement every task myself in this session, then one fresh `dev-setup:adversarial-reviewer` (pinned to opus) checks the whole branch. Cheapest and fastest; no independent review until the end.
 
 **For this plan I recommend <one of the two>, because <one sentence from the plan: how much the tasks depend on each other's interfaces, how many there are, what a shipped mistake would cost>. Does the plan capture what you want, and which approach should we use?"**
 
@@ -190,8 +190,8 @@ them to review the plan and choose an execution method before implementation.
 **If Subagent-driven chosen:**
 - Launch one `dev-setup:worker` (Agent `subagent_type: "dev-setup:worker"`) per task, in plan order, with the plan and spec paths, the full task text, its Interfaces block, and whether it may run the task's commit step.
 - After each task, review the worker's diff and run the task's verification commands yourself before starting the next task (see verification-before-completion).
-- At the end, launch a fresh `dev-setup:reviewer` on the whole branch, or run the dev-setup:audit-flow skill before commit or push.
+- At the end, launch a fresh `dev-setup:adversarial-reviewer` on the whole branch, or run the dev-setup:audit-flow skill before commit or push.
 
 **If Native chosen:**
 - Keep the plan checklist in this session, follow each task's steps (TDD: the dev-setup:tdd skill), and validate each checkpoint before continuing.
-- At the end, launch a fresh `dev-setup:reviewer` on the whole branch, or run the dev-setup:audit-flow skill before commit or push.
+- At the end, launch a fresh `dev-setup:adversarial-reviewer` on the whole branch, or run the dev-setup:audit-flow skill before commit or push.

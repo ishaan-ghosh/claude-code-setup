@@ -6,9 +6,9 @@ Use this template when dispatching a plan document reviewer subagent.
 
 **Dispatch after:** The complete plan is written.
 
-<!-- dev-setup adaptation: dispatch the plugin's pinned read-only reviewer agent (model: opus) instead of an unpinned general-purpose subagent, per the session policy's model rules. -->
+<!-- dev-setup adaptation: dispatch the plugin's pinned read-only adversarial reviewer agent (model: opus; a single-pass document review with no separate verification) instead of an unpinned general-purpose subagent, per the session policy's model rules. -->
 ```
-Agent (subagent_type: "dev-setup:reviewer"):
+Agent (subagent_type: "dev-setup:adversarial-reviewer"):
   description: "Review plan document"
   prompt: |
     You are a plan document reviewer. Verify this plan is complete and ready for implementation.

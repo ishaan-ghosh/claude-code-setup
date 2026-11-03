@@ -18,18 +18,19 @@ The `dev-setup` plugin bundles:
 - **Command** (`commands/`)
   - `/audit` — start the audit flow (`/audit <commit|diff|staged|pr|stack> [target]`).
 - **Agents** (`agents/`, referenced as `dev-setup:<name>`; each pins its model, so it launches without an explicit `model` under the model-policy hook)
-  - `reviewer` (opus) — read-only code/PR auditor; primary, blind-peer, and final-diff reviewer in audit-flow, or any separate review pass.
+  - `reviewer` (sonnet) — read-only code/PR auditor; the initial (primary) reviewer in audit-flow, or other review passes whose findings will get opus verification. Its findings are candidates until an opus run verifies them.
+  - `adversarial-reviewer` (opus) — read-only adversarial reviewer; the blind peer and final-diff reviewer in audit-flow, single-pass spec/plan document reviews, and one-off or ad hoc code/PR reviews with no separate verification.
   - `audit-verifier` (opus) — read-only focused verifier; one confirmed/disputed/unverified verdict per finding in a named scope, with file:line evidence, for the audit-flow two-reviewer gate.
-  - `worker` (opus) — scoped implementation worker for approved plans and accepted audit findings (the audit-flow fix writer); behavior-first tests, incremental validation, no push/merge/release.
-  - `repo-explorer` (sonnet) — read-only repo sweep: facts with absolute paths and line refs, conventions, validation commands, unknowns. No recommendations.
-  - `github-researcher` (sonnet) — read-only GitHub/git-history research (`gh` views and GET-only `gh api`, `git log`/`show`), with links and exact evidence.
-  - `web-researcher` (sonnet) — read-only research from official primary sources, returned as a dated, cited evidence table.
+  - `worker` (sonnet) — scoped implementation worker for approved plans and accepted audit findings (the audit-flow fix writer); behavior-first tests, incremental validation, no push/merge/release.
+  - `repo-explorer` (haiku) — read-only repo sweep: facts with absolute paths and line refs, conventions, validation commands, unknowns. No recommendations.
+  - `github-researcher` (haiku) — read-only GitHub/git-history research (`gh` views and GET-only `gh api`, `git log`/`show`), with links and exact evidence.
+  - `web-researcher` (haiku) — read-only research from official primary sources, returned as a dated, cited evidence table.
 
-  Sonnet agents are for mechanical context collection only; the orchestrator spot-checks any claim a decision depends on.
+  Haiku agents are for context collection and mechanical work only; the orchestrator spot-checks any claim a decision depends on. Sonnet agents handle everything in between, and opus agents handle adversarial review and verification.
 - **Hooks** (`hooks/`)
   - `read-policy` — nudges toward a search-first, paginated-read strategy to keep context small (Read/Grep/Glob and Bash).
   - `session-policy` — injects [`policy/session-policy.md`](policy/session-policy.md) at session start so the defaults apply in every repo, even ones with no `CLAUDE.md`/`AGENTS.md`.
-  - `model-policy` — enforces subagent model routing: explicit `opus` for code and judgment, `sonnet` only for mechanical context collection, no forks.
+  - `model-policy` — enforces subagent model routing: three tiers (`haiku` for context collection and mechanical work, `sonnet` for implementation and initial reviews, `opus` for adversarial review and verification), no forks.
 - **`settings.example.json`** — a non-secret user-settings template (model, theme, marketplace registration, plugin enablement, read-policy tuning, a small permissions allowlist).
 
 The engineering skills are vendored and adapted from [`mattpocock/skills`](https://github.com/mattpocock/skills); see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
@@ -41,7 +42,7 @@ Five skills are vendored from [obra/superpowers](https://github.com/obra/superpo
 | Skill | Use |
 |---|---|
 | `dev-setup:brainstorming` | Before creative work: classify spike / bounded / architectural, agree the design, then (architectural) write a spec. Text-only; the upstream browser companion is not included. |
-| `dev-setup:writing-plans` | Turn an approved spec into a task-by-task plan; execution goes through the orchestrator and `dev-setup:worker`, with `dev-setup:reviewer` or `audit-flow` at the end. |
+| `dev-setup:writing-plans` | Turn an approved spec into a task-by-task plan; execution goes through the orchestrator and `dev-setup:worker`, with `dev-setup:adversarial-reviewer` or `audit-flow` at the end. |
 | `dev-setup:verification-before-completion` | No "done", "fixed", or "passing" claims without fresh command output. |
 | `dev-setup:dispatching-parallel-agents` | Fan out independent problems to model-pinned subagents. |
 | `dev-setup:receiving-code-review` | Evaluate review feedback technically before acting; GitHub replies need your explicit approval. |
@@ -76,14 +77,14 @@ This provenance is local caller/orchestrator-attested bookkeeping, not a cryptog
 Add the marketplace and install the plugin:
 
 ```text
-/plugin marketplace add ishaan-ghosh/claude-code-setup@v0.1.3
+/plugin marketplace add ishaan-ghosh/claude-code-setup@v0.1.4
 /plugin install dev-setup@claude-code-setup
 ```
 
 Or from the CLI:
 
 ```bash
-claude plugin marketplace add ishaan-ghosh/claude-code-setup@v0.1.3
+claude plugin marketplace add ishaan-ghosh/claude-code-setup@v0.1.4
 claude plugin install dev-setup@claude-code-setup
 ```
 
@@ -101,7 +102,7 @@ It registers the marketplace and enables the plugin declaratively:
 ```json
 {
   "extraKnownMarketplaces": {
-    "claude-code-setup": { "source": { "source": "github", "repo": "ishaan-ghosh/claude-code-setup", "ref": "v0.1.3" } }
+    "claude-code-setup": { "source": { "source": "github", "repo": "ishaan-ghosh/claude-code-setup", "ref": "v0.1.4" } }
   },
   "enabledPlugins": { "dev-setup@claude-code-setup": true }
 }
@@ -117,18 +118,26 @@ The plugin carries its working rules itself, so they apply in every repository w
 
 **Model policy (PreToolUse on `Agent`/`Task`).** `hooks/scripts/model-policy.mjs` checks every subagent launch:
 
-- `model: "opus"` is allowed. Use it for anything that writes code or makes judgments.
-- `model: "sonnet"` is allowed, with a reminder that it is only for mechanical context collection and that claims you rely on need spot-checking.
+- `model: "opus"` is allowed silently. Use it for adversarial and verification work: the audit-flow blind peer, final-diff review, focused verifiers, and single-pass spec/plan reviews.
+- `model: "sonnet"` is allowed, with a note that it is for implementation, editing, planning, and initial reviews, and that its review findings are candidates until opus verifies them.
+- `model: "haiku"` is allowed, with a note that it is for context collection and mechanical work only and that claims you rely on need spot-checking.
 - Any other model is blocked. Full model IDs count as their family, so `claude-opus-5-5` is treated as `opus`.
-- A launch with no `model` is allowed only if the agent's definition pins an allowed model in its frontmatter. This covers `dev-setup:reviewer` (pinned to `opus`) and any project (`.claude/agents/`) or user (`~/.claude/agents/`) agent with `model: opus`/`sonnet`. Built-in agents (`general-purpose`, `Explore`, `Plan`, ...) need an explicit `model`, and `model: inherit` does not count as pinned. Other plugins' agents need an explicit `model`.
+- A launch with no `model` is allowed only if the agent's definition pins an allowed model in its frontmatter. This covers the plugin agents (for example `dev-setup:reviewer`, pinned to `sonnet`) and any project (`.claude/agents/`) or user (`~/.claude/agents/`) agent with `model: opus`/`sonnet`/`haiku`. Built-in agents (`general-purpose`, `Explore`, `Plan`, ...) need an explicit `model`, and `model: inherit` does not count as pinned. Other plugins' agents need an explicit `model`.
 - `fork` subagents are blocked. They inherit the orchestrator's model and ignore `model`, so use `general-purpose` with an explicit model instead.
 
 | Variable | Values | Default |
 |---|---|---|
 | `MODEL_POLICY_MODE` | `deny` (block with a reason), `warn` (allow and add a note), `ask` (ask you), `off` | `deny` |
 | `MODEL_POLICY_DISABLED` | `1` turns the hook off | unset |
-| `MODEL_POLICY_ALLOWED` | comma list of allowed model families, e.g. `opus,sonnet,haiku` | `opus,sonnet` |
+| `MODEL_POLICY_ALLOWED` | comma list of allowed model families; narrow it with e.g. `opus,sonnet` (denies haiku) or widen it with e.g. `opus,sonnet,haiku,fable` | `opus,sonnet,haiku` |
 | `SESSION_POLICY_DISABLED` | `1` stops the session policy being added | unset |
+
+**Upgrading from 0.1.3:**
+
+- `dev-setup:reviewer` and `dev-setup:worker` moved from opus to sonnet. The reviewer is now the audit-flow initial pass only; standalone or ad hoc reviews use `dev-setup:adversarial-reviewer` (opus). `dev-setup:audit-verifier` stays opus.
+- `repo-explorer`, `github-researcher`, and `web-researcher` moved from sonnet to haiku.
+- The default `MODEL_POLICY_ALLOWED` is now `opus,sonnet,haiku`.
+- If you set `MODEL_POLICY_ALLOWED=opus,sonnet` (the old default), the haiku-pinned agents are denied. If you set `opus` only, `dev-setup:reviewer` and `dev-setup:worker` (used by `/audit`'s primary and fix steps) are denied. Either way, pass an explicit allowed `model` or widen the set.
 
 Set these in the `env` block of your settings or in your shell. Both hooks fail open: bad input or an internal error never blocks your work. The hook sees only the launch request, not the model Claude Code finally resolves.
 

@@ -6,9 +6,9 @@ Use this template when dispatching a spec document reviewer subagent.
 
 **Dispatch after:** Spec document is written to docs/superpowers/specs/
 
-<!-- dev-setup adaptation: dispatch the plugin's pinned read-only reviewer agent (model: opus) instead of an unpinned general-purpose subagent, per the session policy's model rules. -->
+<!-- dev-setup adaptation: dispatch the plugin's pinned read-only adversarial reviewer agent (model: opus; a single-pass document review with no separate verification) instead of an unpinned general-purpose subagent, per the session policy's model rules. -->
 ```
-Agent (subagent_type: "dev-setup:reviewer"):
+Agent (subagent_type: "dev-setup:adversarial-reviewer"):
   description: "Review spec document"
   prompt: |
     You are a spec document reviewer. Verify this spec is complete and ready for planning.

@@ -8,9 +8,16 @@
  *
  *  - `fork` subagents are disallowed: they inherit the orchestrator's model
  *    and ignore `model`.
- *  - An explicit `model` must be allowed (default `opus,sonnet`). `sonnet` is
- *    allowed with a reminder that it is for mechanical context collection only.
- *    Full model IDs map to their family (`claude-opus-5-5[1m]` -> opus).
+ *  - An explicit `model` must be allowed (default `opus,sonnet,haiku`), giving
+ *    three tiers:
+ *      haiku  — context collection and mechanical work (allowed with a note to
+ *               spot-check claims a decision depends on)
+ *      sonnet — everything in between: implementation, editing, planning, and
+ *               initial reviews (allowed with a note that its review findings
+ *               are candidates until opus verifies them)
+ *      opus   — adversarial and verification work (allowed silently)
+ *    Other models (e.g. fable) are denied. Full model IDs map to their family
+ *    (`claude-opus-5-5[1m]` -> opus).
  *  - With no `model`, the launch is allowed only when the agent definition for
  *    `subagent_type` pins an allowed model in its frontmatter (`inherit` does
  *    not count). Definitions are looked up as:
@@ -25,7 +32,7 @@
  *   warn           — allow, but inject the reason as additionalContext
  *   ask            — surface a permission prompt to the human
  *   off            — disable the policy entirely (also: MODEL_POLICY_DISABLED=1)
- * `MODEL_POLICY_ALLOWED` (comma list, default `opus,sonnet`) widens the set.
+ * `MODEL_POLICY_ALLOWED` (comma list, default `opus,sonnet,haiku`) widens or narrows the set.
  *
  * Fails open: malformed input or any internal error lets the launch proceed
  * (empty stdout, one line on stderr). Never echoes the subagent prompt.
@@ -36,7 +43,7 @@ import { homedir } from "node:os";
 import { dirname, join, parse as parsePath, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const DEFAULT_ALLOWED = ["opus", "sonnet"];
+export const DEFAULT_ALLOWED = ["opus", "sonnet", "haiku"];
 
 export const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -46,12 +53,70 @@ const AGENT_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
 const MAX_PARENT_DIRS = 64;
 const MAX_DEFINITION_BYTES = 256 * 1024;
 
-export const SONNET_REMINDER =
-	"Model policy: sonnet is only for mechanical context collection (repo sweeps, file gathering, exemplar reads, fact lookups). " +
-	"Spot-check every claim from this run that a decision depends on before relying on it; use opus for anything that writes code or makes judgments.";
+const TIER_ROLES = [
+	["haiku", "context collection and mechanical work"],
+	["sonnet", "implementation, planning, and initial reviews"],
+	["opus", "adversarial review and verification"],
+];
+const TIER_NAMES = TIER_ROLES.map(([family]) => family);
 
-const HOW_TO_FIX =
-	'Relaunch with model "opus" for anything that writes code or makes judgments, or model "sonnet" only for mechanical context collection.';
+/** Substitute order (closest tier first) when an agent's pinned family is denied. */
+const SUBSTITUTES = {
+	haiku: ["sonnet", "opus"],
+	sonnet: ["opus", "haiku"],
+	opus: ["sonnet", "haiku"],
+};
+
+/** Sonnet allow-path note; cross-tier advice names only allowed tiers. */
+export function sonnetReminder(allowed = DEFAULT_ALLOWED) {
+	const opus = allowed.includes("opus");
+	return (
+		"Model policy: sonnet is for implementation, editing, planning, and initial reviews. " +
+		(opus
+			? "Its review findings are candidates until an opus run verifies them; use opus for adversarial review and verification."
+			: "Its review findings are candidates until independently verified.")
+	);
+}
+
+/** Haiku allow-path note; cross-tier advice names only allowed tiers. */
+export function haikuReminder(allowed = DEFAULT_ALLOWED) {
+	const advice = [];
+	if (allowed.includes("sonnet")) advice.push("sonnet for implementation and initial reviews");
+	if (allowed.includes("opus")) advice.push("opus for adversarial review and verification");
+	return (
+		"Model policy: haiku is for context collection and mechanical work only. " +
+		"Spot-check every claim from this run that a decision depends on" +
+		(advice.length ? `; use ${advice.join(", and ")}.` : ".")
+	);
+}
+
+export const SONNET_REMINDER = sonnetReminder(DEFAULT_ALLOWED);
+export const HAIKU_REMINDER = haikuReminder(DEFAULT_ALLOWED);
+
+const quoted = (family) => `"${family}"`;
+
+/** Every allowed family: tiers with their roles, then any other allowed family plainly. */
+function tierList(allowed) {
+	const parts = [
+		...TIER_ROLES.filter(([family]) => allowed.includes(family)).map(([family, role]) => `${quoted(family)} for ${role}`),
+		...allowed.filter((family) => !TIER_NAMES.includes(family)).map(quoted),
+	];
+	if (!parts.length) return `a model from the allowed set (${allowedText(allowed)})`;
+	if (parts.length === 1) return parts[0];
+	return `${parts.slice(0, -1).join(", ")}${parts.length > 2 ? "," : ""} or ${parts[parts.length - 1]}`;
+}
+
+function howToFix(allowed) {
+	return `Relaunch with model ${tierList(allowed)}.`;
+}
+
+/** Remediation for a denied pinned agent: allowed families, closest substitute tier first. */
+function pinnedFix(allowed, pinned) {
+	const order = SUBSTITUTES[pinned] ?? ["sonnet", "opus", "haiku"];
+	const families = [...order.filter((family) => allowed.includes(family)), ...allowed.filter((family) => !TIER_NAMES.includes(family))];
+	if (!families.length) return howToFix(allowed);
+	return `Pass an explicit allowed model for this agent's work, closest tier first: ${families.map(quoted).join(", ")}.`;
+}
 
 // ---------------------------------------------------------------------------
 // configuration
@@ -212,10 +277,12 @@ function note(context) {
 	return { hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: context } };
 }
 
-/** Allowed family -> null (silent) or sonnet note; disallowed -> undefined. */
+/** Allowed family -> null (silent, opus) or a tier note; disallowed -> undefined. */
 function allowedOutcome(family, allowed) {
 	if (!allowed.includes(family)) return undefined;
-	return family === "sonnet" ? note(SONNET_REMINDER) : null;
+	if (family === "sonnet") return note(sonnetReminder(allowed));
+	if (family === "haiku") return note(haikuReminder(allowed));
+	return null;
 }
 
 /**
@@ -237,7 +304,7 @@ export function evaluate(input, { mode = "deny", allowed = DEFAULT_ALLOWED, reso
 			mode,
 			'Model policy: `fork` subagents are not allowed — forks inherit the orchestrator\'s model and ignore `model`. ' +
 				'Relaunch as subagent_type "general-purpose" with a self-contained prompt and an explicit model: ' +
-				'"opus" for anything that writes code or makes judgments, "sonnet" only for mechanical context collection.',
+				tierList(allowed) + ".",
 		);
 	}
 
@@ -247,7 +314,7 @@ export function evaluate(input, { mode = "deny", allowed = DEFAULT_ALLOWED, reso
 		if (outcome !== undefined) return outcome;
 		return violation(
 			mode,
-			`Model policy: model ${JSON.stringify(String(toolInput.model))} is not allowed for subagents (allowed: ${allowedText(allowed)}). ${HOW_TO_FIX} ` +
+			`Model policy: model ${JSON.stringify(String(toolInput.model))} is not allowed for subagents (allowed: ${allowedText(allowed)}). ${howToFix(allowed)} ` +
 				"Other models require the user's explicit request.",
 		);
 	}
@@ -260,7 +327,7 @@ export function evaluate(input, { mode = "deny", allowed = DEFAULT_ALLOWED, reso
 		return violation(
 			mode,
 			`Model policy: subagent_type ${JSON.stringify(type)} (${definition.label}) pins model ${JSON.stringify(definition.model)}, ` +
-				`which is not allowed (allowed: ${allowedText(allowed)}). Pass an explicit model to override it. ${HOW_TO_FIX}`,
+				`which is not allowed (allowed: ${allowedText(allowed)}). ${pinnedFix(allowed, pinned)}`,
 		);
 	}
 
@@ -270,7 +337,7 @@ export function evaluate(input, { mode = "deny", allowed = DEFAULT_ALLOWED, reso
 	return violation(
 		mode,
 		`Model policy: subagent_type ${JSON.stringify(type)} was launched without an explicit model and ${why}, ` +
-			`so it would inherit the orchestrator's model. ${HOW_TO_FIX}`,
+			`so it would inherit the orchestrator's model. ${howToFix(allowed)}`,
 	);
 }
 
