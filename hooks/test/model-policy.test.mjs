@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { DEFAULT_ALLOWED, evaluate, modelFamily, parseFrontmatter, readAllowed, readMode, resolveAgent } from "../scripts/model-policy.mjs";
+import { DEFAULT_ALLOWED, HAIKU_REMINDER, SONNET_REMINDER, evaluate, modelFamily, parseFrontmatter, readAllowed, readMode, resolveAgent } from "../scripts/model-policy.mjs";
 
 const hook = join(import.meta.dirname, "../scripts/model-policy.mjs");
 
@@ -71,8 +71,9 @@ test("readMode defaults to deny and honours MODEL_POLICY_MODE / MODEL_POLICY_DIS
 	assert.equal(readMode({ MODEL_POLICY_MODE: "warn", MODEL_POLICY_DISABLED: "1" }), "off");
 });
 
-test("readAllowed defaults to opus,sonnet and normalises a custom list", () => {
-	assert.deepEqual(readAllowed({}), DEFAULT_ALLOWED);
+test("readAllowed defaults to opus,sonnet,haiku and normalises a custom list", () => {
+	assert.deepEqual(DEFAULT_ALLOWED, ["opus", "sonnet", "haiku"]);
+	assert.deepEqual(readAllowed({}), ["opus", "sonnet", "haiku"]);
 	assert.deepEqual(readAllowed({ MODEL_POLICY_ALLOWED: " , " }), DEFAULT_ALLOWED);
 	assert.deepEqual(readAllowed({ MODEL_POLICY_ALLOWED: "opus, Sonnet ,claude-haiku-4-5,opus" }), ["opus", "sonnet", "haiku"]);
 });
@@ -112,7 +113,7 @@ test("evaluate uses the injected resolver for pinned definitions", () => {
 
 test("resolveAgent finds this plugin's reviewer and rejects other plugins and unsafe names", () => {
 	const reviewer = resolveAgent("dev-setup:reviewer", { cwd: tempDir(), env: { HOME: tempDir() } });
-	assert.equal(reviewer.model, "opus");
+	assert.equal(reviewer.model, "sonnet");
 	assert.equal(reviewer.label, "plugin agent dev-setup:reviewer");
 	assert.equal(resolveAgent("other-plugin:reviewer", { env: { HOME: tempDir() } }), null);
 	assert.equal(resolveAgent("dev-setup:../../etc/passwd", { env: { HOME: tempDir() } }), null);
@@ -147,29 +148,43 @@ test("explicit opus is allowed silently", () => {
 	assert.equal(result.stderr, "");
 });
 
-test("explicit sonnet is allowed with a mechanical-collection reminder", () => {
-	const result = run(launch({ subagent_type: "Explore", model: "sonnet" }));
+test("explicit sonnet is allowed with an implementation/initial-review note", () => {
+	const result = run(launch({ subagent_type: "general-purpose", model: "sonnet" }));
 	assert.equal(result.output.hookSpecificOutput.hookEventName, "PreToolUse");
 	assert.equal(decision(result), undefined);
-	assert.match(context(result), /mechanical context collection/);
-	assert.match(context(result), /Spot-check/);
+	assert.match(context(result), /implementation/);
+	assert.match(context(result), /candidates until an opus run verifies/);
 });
 
-test("haiku and fable are denied with an actionable reason", () => {
-	for (const model of ["haiku", "fable", "claude-fable-5-1", "opusplan"]) {
+test("explicit haiku (alias and full IDs) is allowed with a context-collection note", () => {
+	for (const model of ["haiku", "claude-haiku-5-5", "claude-haiku-4-5"]) {
+		const result = run(launch({ subagent_type: "Explore", model }));
+		assert.equal(result.output.hookSpecificOutput.hookEventName, "PreToolUse");
+		assert.equal(decision(result), undefined, model);
+		assert.match(context(result), /context collection and mechanical work only/, model);
+		assert.match(context(result), /[Ss]pot-check/, model);
+	}
+});
+
+test("fable, unknown families and opusplan are denied with a reason naming all three tiers", () => {
+	for (const model of ["fable", "claude-fable-5-1", "opusplan", "gpt-5"]) {
 		const result = run(launch({ subagent_type: "general-purpose", model }));
 		assert.equal(result.output.hookSpecificOutput.hookEventName, "PreToolUse");
 		assert.equal(decision(result), "deny", model);
-		assert.match(reason(result), /not allowed for subagents \(allowed: opus, sonnet\)/);
-		assert.match(reason(result), /model "opus"/);
+		assert.match(reason(result), /not allowed for subagents \(allowed: opus, sonnet, haiku\)/);
+		assert.match(reason(result), /model "haiku"/);
+		assert.match(reason(result), /"sonnet"/);
+		assert.match(reason(result), /"opus"/);
+		assert.match(reason(result), /Other models require the user's explicit request/);
 	}
 });
 
 test("full model IDs are treated as their family", () => {
 	assert.equal(run(launch({ subagent_type: "general-purpose", model: "claude-opus-5-5" })).output, null);
 	assert.equal(run(launch({ subagent_type: "general-purpose", model: "claude-opus-5-5[1m]" })).output, null);
-	assert.match(context(run(launch({ subagent_type: "general-purpose", model: "claude-sonnet-5" }))), /mechanical/);
-	assert.equal(decision(run(launch({ subagent_type: "general-purpose", model: "claude-haiku-4-5" }))), "deny");
+	assert.match(context(run(launch({ subagent_type: "general-purpose", model: "claude-sonnet-5" }))), /implementation/);
+	assert.match(context(run(launch({ subagent_type: "general-purpose", model: "claude-haiku-5-5" }))), /context collection/);
+	assert.equal(decision(run(launch({ subagent_type: "general-purpose", model: "claude-fable-5-1" }))), "deny");
 });
 
 test("a missing model on built-in agents is denied", () => {
@@ -188,17 +203,22 @@ test("fork is denied even with an explicit model", () => {
 		assert.equal(decision(result), "deny");
 		assert.match(reason(result), /forks inherit the orchestrator's model/);
 		assert.match(reason(result), /general-purpose/);
+		assert.match(reason(result), /"haiku"/);
+		assert.match(reason(result), /"sonnet"/);
+		assert.match(reason(result), /"opus"/);
 	}
 });
 
 test("dev-setup:reviewer without a model is allowed via its pinned frontmatter", () => {
 	const result = run(launch({ subagent_type: "dev-setup:reviewer" }));
-	assert.equal(result.stdout, "");
+	assert.equal(decision(result), undefined);
+	assert.match(context(result), /initial reviews/);
+	assert.equal(run(launch({ subagent_type: "dev-setup:adversarial-reviewer" })).stdout, "");
 	assert.equal(decision(run(launch({ subagent_type: "dev-setup:unknown-agent" }))), "deny");
 	assert.equal(decision(run(launch({ subagent_type: "other-plugin:reviewer" }))), "deny");
 });
 
-test("project agent definitions: pinned opus allowed, inherit denied, pinned haiku denied", () => {
+test("project agent definitions: pinned opus and haiku allowed, inherit denied", () => {
 	const box = sandbox();
 	const dir = join(box.cwd, ".claude", "agents");
 	writeAgent(dir, "pinned.md", "name: pinned\ndescription: x\nmodel: opus");
@@ -211,13 +231,17 @@ test("project agent definitions: pinned opus allowed, inherit denied, pinned hai
 	assert.match(reason(inherits), /does not pin a model \(model: inherit\)/);
 	assert.equal(decision(run(launch({ subagent_type: "unpinned" }), {}, box)), "deny");
 	const cheap = run(launch({ subagent_type: "cheap" }), {}, box);
-	assert.equal(decision(cheap), "deny");
-	assert.match(reason(cheap), /pins model "haiku"/);
-	// An explicit allowed model overrides a disallowed pin.
-	assert.equal(run(launch({ subagent_type: "cheap", model: "opus" }), {}, box).output, null);
+	assert.equal(decision(cheap), undefined);
+	assert.match(context(cheap), /context collection/);
+	// A pin outside a narrowed allowed set is denied; an explicit allowed model overrides it.
+	const narrowed = run(launch({ subagent_type: "cheap" }), { MODEL_POLICY_ALLOWED: "opus,sonnet" }, box);
+	assert.equal(decision(narrowed), "deny");
+	assert.match(reason(narrowed), /pins model "haiku"/);
+	assert.match(reason(narrowed), /allowed: opus, sonnet\)/);
+	assert.equal(run(launch({ subagent_type: "cheap", model: "opus" }), { MODEL_POLICY_ALLOWED: "opus,sonnet" }, box).output, null);
 });
 
-test("user agent definitions: pinned opus allowed, inherit denied, pinned haiku denied", () => {
+test("user agent definitions: pinned opus, sonnet and haiku allowed, inherit denied", () => {
 	const box = sandbox();
 	const dir = join(box.home, ".claude", "agents");
 	writeAgent(dir, "pinned.md", "name: pinned\nmodel: claude-opus-5-5");
@@ -226,28 +250,33 @@ test("user agent definitions: pinned opus allowed, inherit denied, pinned haiku 
 	writeAgent(dir, "helper.md", "name: helper\nmodel: sonnet");
 	assert.equal(run(launch({ subagent_type: "pinned" }), {}, box).output, null);
 	assert.equal(decision(run(launch({ subagent_type: "inherits" }), {}, box)), "deny");
-	assert.equal(decision(run(launch({ subagent_type: "cheap" }), {}, box)), "deny");
-	assert.match(context(run(launch({ subagent_type: "helper" }), {}, box)), /mechanical/);
+	assert.match(context(run(launch({ subagent_type: "cheap" }), {}, box)), /context collection/);
+	assert.match(context(run(launch({ subagent_type: "helper" }), {}, box)), /implementation/);
+	assert.equal(decision(run(launch({ subagent_type: "cheap" }), { MODEL_POLICY_ALLOWED: "opus,sonnet" }, box)), "deny");
 });
 
 test("warn mode allows with additionalContext; ask mode asks; off and DISABLED are silent", () => {
-	const warned = run(launch({ subagent_type: "general-purpose", model: "haiku" }), { MODEL_POLICY_MODE: "warn" });
+	const warned = run(launch({ subagent_type: "general-purpose", model: "fable" }), { MODEL_POLICY_MODE: "warn" });
 	assert.equal(decision(warned), undefined);
 	assert.match(context(warned), /not allowed for subagents/);
 	const asked = run(launch({ subagent_type: "fork" }), { MODEL_POLICY_MODE: "ask" });
 	assert.equal(decision(asked), "ask");
 	assert.match(reason(asked), /fork/);
 	for (const env of [{ MODEL_POLICY_MODE: "off" }, { MODEL_POLICY_DISABLED: "1", MODEL_POLICY_MODE: "deny" }]) {
-		const result = run(launch({ subagent_type: "fork", model: "haiku" }), env);
+		const result = run(launch({ subagent_type: "fork", model: "fable" }), env);
 		assert.equal(result.stdout, "");
 		assert.equal(result.stderr, "");
 	}
 });
 
-test("MODEL_POLICY_ALLOWED widens the allowed set", () => {
-	const env = { MODEL_POLICY_ALLOWED: "opus,sonnet,haiku" };
-	assert.equal(run(launch({ subagent_type: "general-purpose", model: "haiku" }), env).output, null);
-	assert.equal(decision(run(launch({ subagent_type: "general-purpose", model: "fable" }), env)), "deny");
+test("MODEL_POLICY_ALLOWED widens and narrows the allowed set", () => {
+	const env = { MODEL_POLICY_ALLOWED: "opus,sonnet,haiku,fable" };
+	assert.match(context(run(launch({ subagent_type: "general-purpose", model: "haiku" }), env)), /context collection/);
+	assert.equal(run(launch({ subagent_type: "general-purpose", model: "fable" }), env).output, null);
+	assert.equal(decision(run(launch({ subagent_type: "general-purpose", model: "opusplan" }), env)), "deny");
+	const noHaiku = run(launch({ subagent_type: "general-purpose", model: "haiku" }), { MODEL_POLICY_ALLOWED: "opus,sonnet" });
+	assert.equal(decision(noHaiku), "deny");
+	assert.match(reason(noHaiku), /allowed: opus, sonnet\)/);
 	const narrowed = run(launch({ subagent_type: "general-purpose", model: "sonnet" }), { MODEL_POLICY_ALLOWED: "opus" });
 	assert.equal(decision(narrowed), "deny");
 	assert.match(reason(narrowed), /allowed: opus\)/);
@@ -260,7 +289,7 @@ test("the legacy Task tool name is handled; other tools are ignored", () => {
 });
 
 test("the subagent prompt is never echoed", () => {
-	for (const input of [launch({ subagent_type: "fork" }), launch({ model: "haiku" }), launch({ model: "sonnet" })]) {
+	for (const input of [launch({ subagent_type: "fork" }), launch({ model: "fable" }), launch({ model: "haiku" }), launch({ model: "sonnet" })]) {
 		for (const mode of ["deny", "warn", "ask"]) {
 			const result = run(input, { MODEL_POLICY_MODE: mode });
 			assert.doesNotMatch(result.stdout + result.stderr, /SECRET-PROMPT-TEXT/);
@@ -299,4 +328,97 @@ test("importing the module does not run the hook", () => {
 	});
 	assert.equal(result.status, 0, result.stderr);
 	assert.equal(result.stdout, "imported\n");
+});
+
+test("every plugin agent pins a model in the default allowed set, matching the routing table", () => {
+	const expected = {
+		reviewer: "sonnet",
+		"adversarial-reviewer": "opus",
+		"audit-verifier": "opus",
+		worker: "sonnet",
+		"repo-explorer": "haiku",
+		"github-researcher": "haiku",
+		"web-researcher": "haiku",
+	};
+	const dir = join(import.meta.dirname, "../../agents");
+	const actual = {};
+	for (const file of readdirSync(dir).filter((f) => f.endsWith(".md"))) {
+		const fields = parseFrontmatter(readFileSync(join(dir, file), "utf8"));
+		assert.equal(fields.name, file.replace(/\.md$/, ""), file);
+		assert.ok(DEFAULT_ALLOWED.includes(modelFamily(fields.model)), `${file} pins ${fields.model}`);
+		actual[fields.name] = fields.model;
+	}
+	assert.deepEqual(actual, expected);
+});
+
+test("deny remediation only recommends families in the effective allowed set", () => {
+	const resolve = (type) => (type === "cheap" ? { label: "test agent", model: "haiku" } : type === "big" ? { label: "test agent", model: "opus" } : null);
+	const sets = [["opus", "sonnet"], ["opus"], ["sonnet", "haiku"], ["haiku"]];
+	for (const allowed of sets) {
+		const denied = ["opus", "sonnet", "haiku"].filter((family) => !allowed.includes(family));
+		const launches = [
+			launch({ subagent_type: "general-purpose", model: "fable" }),
+			launch({ subagent_type: "general-purpose" }),
+			launch({ subagent_type: "fork" }),
+			launch({ subagent_type: "fork", model: "opus" }),
+			launch({ subagent_type: "cheap" }),
+			launch({ subagent_type: "big" }),
+			launch({ subagent_type: "general-purpose", model: "haiku" }),
+			launch({ subagent_type: "general-purpose", model: "opus" }),
+			launch({ subagent_type: "general-purpose", model: "sonnet" }),
+		];
+		for (const input of launches) {
+			const out = evaluate(input, { allowed, resolve });
+			const text = out?.hookSpecificOutput?.permissionDecisionReason;
+			if (!text) continue;
+			// Strip the "(allowed: ...)" listing and quoted echo of the caller's own model/type before checking.
+			const advice = text.replace(/\(allowed:[^)]*\)/, "").replace(/model "[^"]*" is not allowed/, "").replace(/pins model "[^"]*"/, "").replace(/\(model: [^)]*\)/, "");
+			for (const family of denied) {
+				assert.doesNotMatch(advice, new RegExp(`"${family}"`), `${allowed} recommends ${family}: ${text}`);
+			}
+			for (const family of allowed) {
+				assert.match(advice, new RegExp(`"${family}"`), `${allowed} omits ${family}: ${text}`);
+			}
+		}
+	}
+	const pinned = evaluate(launch({ subagent_type: "cheap" }), { allowed: ["opus", "sonnet"], resolve });
+	assert.match(pinned.hookSpecificOutput.permissionDecisionReason, /Pass an explicit allowed model/);
+});
+
+test("allow-path notes, mixed sets and pinned substitutes follow the effective allowed set", () => {
+	const ctx = (input, allowed, resolve) => evaluate(input, { allowed, resolve })?.hookSpecificOutput;
+	const reason = (input, allowed, resolve) => ctx(input, allowed, resolve)?.permissionDecisionReason;
+	const haiku = launch({ subagent_type: "general-purpose", model: "haiku" });
+	const sonnet = launch({ subagent_type: "general-purpose", model: "sonnet" });
+
+	// Default-config notes are unchanged.
+	assert.equal(ctx(haiku, DEFAULT_ALLOWED).additionalContext, HAIKU_REMINDER);
+	assert.equal(ctx(sonnet, DEFAULT_ALLOWED).additionalContext, SONNET_REMINDER);
+	assert.match(HAIKU_REMINDER, /use sonnet for implementation and initial reviews, and opus for adversarial review and verification\.$/);
+
+	// Narrowed sets: notes never recommend a denied tier.
+	const haikuOpus = ctx(haiku, ["haiku", "opus"]).additionalContext;
+	assert.doesNotMatch(haikuOpus, /sonnet/);
+	assert.match(haikuOpus, /use opus for adversarial review and verification/);
+	const sonnetHaiku = ctx(sonnet, ["sonnet", "haiku"]).additionalContext;
+	assert.doesNotMatch(sonnetHaiku, /opus/);
+	const haikuOnly = ctx(haiku, ["haiku"]).additionalContext;
+	assert.doesNotMatch(haikuOnly, /sonnet|opus/);
+
+	// Mixed sets: non-tier families are listed too.
+	for (const allowed of [["haiku", "fable"], ["opus", "sonnet", "haiku", "fable"]]) {
+		const text = reason(launch({ subagent_type: "general-purpose" }), allowed);
+		assert.match(text, /"fable"/);
+		for (const family of allowed) assert.match(text, new RegExp(`"${family}"`));
+	}
+
+	// Pinned agents: closest allowed tier first, and nothing denied is recommended.
+	const resolve = (type) => ({ label: "plugin agent", model: { explorer: "haiku", worker: "sonnet" }[type] });
+	const explorer = reason(launch({ subagent_type: "explorer" }), ["opus", "sonnet"], resolve);
+	assert.match(explorer, /closest tier first: "sonnet", "opus"\./);
+	const worker = reason(launch({ subagent_type: "worker" }), ["opus"], resolve);
+	assert.match(worker, /closest tier first: "opus"\./);
+	assert.doesNotMatch(worker.replace(/pins model "[^"]*"/, ""), /"sonnet"|"haiku"/);
+	const workerHaiku = reason(launch({ subagent_type: "worker" }), ["haiku", "opus"], resolve);
+	assert.match(workerHaiku, /closest tier first: "opus", "haiku"\./);
 });

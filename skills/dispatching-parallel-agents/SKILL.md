@@ -77,7 +77,7 @@ Agent (subagent_type: "dev-setup:worker"): "Fix tool-approval-race-conditions.te
 
 Multiple dispatch calls in one response = parallel execution. One per response = sequential.
 
-Pick the agent by the kind of work: `dev-setup:worker` (pinned to opus) or a `general-purpose` agent with `model: "opus"` for anything that writes code or makes judgments; `dev-setup:repo-explorer` (pinned to sonnet) or `model: "sonnet"` only for mechanical context collection. Never use `fork` subagents: they inherit your context and model.
+Pick the agent by the kind of work: `dev-setup:repo-explorer`, `dev-setup:github-researcher`, `dev-setup:web-researcher` (pinned to haiku) or `model: "haiku"` for context collection (the pinned plugin agents are read-only; spot-check claims a decision depends on), or a `general-purpose` agent with `model: "haiku"` for bounded mechanical edits with no judgment calls (split, stitch, rename, reformat); `dev-setup:worker` (pinned to sonnet) or a `general-purpose` agent with `model: "sonnet"` for everything in between (implementation, editing, planning, initial reviews); `dev-setup:adversarial-reviewer` or `dev-setup:audit-verifier` (pinned to opus) or `model: "opus"` for adversarial review and verification. Never use `fork` subagents: they inherit your context and model.
 
 ### 4. Review and Integrate
 

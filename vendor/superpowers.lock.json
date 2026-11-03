@@ -29,7 +29,7 @@
     },
     {
       "skill": "requesting-code-review",
-      "reason": "Covered by dev-setup:audit-flow and the dev-setup:reviewer agent."
+      "reason": "Covered by dev-setup:audit-flow; ad hoc reviews use the dev-setup:adversarial-reviewer agent."
     },
     {
       "skill": "using-superpowers",
@@ -73,9 +73,9 @@
   "adaptations": [
     "Skill names keep upstream names; the plugin namespaces them as dev-setup:<name>. Every adapted file carries `<!-- dev-setup adaptation: ... -->` comments describing its changes.",
     "brainstorming/SKILL.md: remove the Visual Companion checklist step and section (text-only brainstorming); point the bounded path's TDD note at dev-setup:tdd.",
-    "brainstorming/spec-document-reviewer-prompt.md, writing-plans/plan-document-reviewer-prompt.md: dispatch the pinned read-only dev-setup:reviewer agent instead of an unpinned general-purpose subagent.",
-    "writing-plans/SKILL.md: route plan execution (upstream subagent-driven-development / executing-plans / using-git-worktrees) through the orchestrator, dev-setup:worker, dev-setup:reviewer or dev-setup:audit-flow, and dev-setup:tdd.",
-    "dispatching-parallel-agents/SKILL.md: dispatch examples use dev-setup:worker; add the session policy's model rule (opus for code and judgment, sonnet only for mechanical context collection, no fork).",
+    "brainstorming/spec-document-reviewer-prompt.md, writing-plans/plan-document-reviewer-prompt.md: dispatch the pinned read-only dev-setup:adversarial-reviewer agent (opus; single-pass document review) instead of an unpinned general-purpose subagent.",
+    "writing-plans/SKILL.md: route plan execution (upstream subagent-driven-development / executing-plans / using-git-worktrees) through the orchestrator, dev-setup:worker (sonnet), dev-setup:adversarial-reviewer (opus) or dev-setup:audit-flow, and dev-setup:tdd.",
+    "dispatching-parallel-agents/SKILL.md: dispatch examples use dev-setup:worker; add the session policy's model rule (three tiers: haiku for context collection and mechanical work, sonnet for implementation and initial reviews, opus for adversarial review and verification; no fork).",
     "receiving-code-review/SKILL.md: a GitHub thread reply requires the user's explicit approval for that reply."
   ],
   "resources": [
@@ -90,14 +90,14 @@
       "source": "superpowers-5bf4e78011075bcfc0dc295f0724994cd123ee71/skills/brainstorming/spec-document-reviewer-prompt.md",
       "target": "skills/brainstorming/spec-document-reviewer-prompt.md",
       "upstreamSha256": "95a0a195de9d984be2fffa95bab16fc8c563bc296a9cfc5e9c29cb3ece0d7457",
-      "sha256": "4c0e00bb89b85e56eeb059b789ce091319e6f0c64db63aa5387dd94681ded71b",
+      "sha256": "85f53c091e5ce94a8a880ccdc310ae06723d63e975904ef86fdef015576ec630",
       "adapted": true
     },
     {
       "source": "superpowers-5bf4e78011075bcfc0dc295f0724994cd123ee71/skills/dispatching-parallel-agents/SKILL.md",
       "target": "skills/dispatching-parallel-agents/SKILL.md",
       "upstreamSha256": "1968923066f3b707eb01d1992cdf4c42284c3855f70253b9cd5000ff45fca13c",
-      "sha256": "8d1ffddfce212c36027fc79cfd40be0895c873c3450b0653352f1d2a8a4c9f26",
+      "sha256": "9522adc3ce1d0da131dc20367f5b347ced49e75f30a21459df9ca97aaabbd7d0",
       "adapted": true
     },
     {
@@ -118,14 +118,14 @@
       "source": "superpowers-5bf4e78011075bcfc0dc295f0724994cd123ee71/skills/writing-plans/plan-document-reviewer-prompt.md",
       "target": "skills/writing-plans/plan-document-reviewer-prompt.md",
       "upstreamSha256": "aa728b96aad603c8be28875a4305637f6c984aa81ffcadcb13e743202fa2a0c7",
-      "sha256": "7fa1ccefa3e7cef4c586b33979c930b5db5240d7b5599ab37b27db732e96cd9b",
+      "sha256": "a70cb735d475610319860e0755f1bbcdf1a64052806649ae0c5e89e6ed3575e1",
       "adapted": true
     },
     {
       "source": "superpowers-5bf4e78011075bcfc0dc295f0724994cd123ee71/skills/writing-plans/SKILL.md",
       "target": "skills/writing-plans/SKILL.md",
       "upstreamSha256": "0bc3d36590f7b2c323ed3ec18ff77e9f8ed57af42f5680a02b11a2d20de265cf",
-      "sha256": "90f555ace43c363a177a10ea1968a12fccf17f0e3ddd2fa91cf031bd39da2b1d",
+      "sha256": "b61067bfc31414d74daec330dce134398096bbf8591bdd002efe319499e75bde",
       "adapted": true
     },
     {
